@@ -28,3 +28,11 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - **Fix:** no anonymous sign-ins. Each phone gets a random browser ID and can only act through five small database functions. Paperplate's existing rules weren't touched.
 - Dry-ran the migration inside a transaction that rolled back, then applied it for real.
 - Ran 20 permission tests as an audience phone: vote twice, vote on a closed poll, vote for another poll's option, read others' votes, change the poll, see unapproved questions. All blocked; the allowed actions worked.
+
+## Stage 3: phone voting screen
+
+- Big tap targets with a name and one-line description, a clear selected state, and "Vote recorded" feedback.
+- Switches on its own: "Voting opens soon" → ballot → "Voting closed, watch the screen" → "The room picked…", each within about a second via Supabase Realtime, with a check every 4 seconds if the live connection drops.
+- Remembers your choice after a reload; changing your vote updates the same row instead of adding one.
+- About 61 KB compressed, so it loads fast on cellular.
+- Problem: the option buttons had no names for screen readers. Fix: added labels.

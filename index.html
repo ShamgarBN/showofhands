@@ -7,11 +7,16 @@
     <meta name="robots" content="noindex" />
     <title>Show of Hands</title>
   </head>
-  <body>
-    <main id="app" class="placeholder">
-      <h1>Show of Hands</h1>
-      <p>Voting opens soon.</p>
-    </main>
+  <body class="phone-body">
+    <div class="phone">
+      <header class="phone-head">
+        <span class="brand">Show of Hands</span>
+        <span class="conn" id="conn" hidden>Reconnecting…</span>
+      </header>
+      <main id="view" aria-live="polite">
+        <section class="state"><div class="spinner" aria-hidden="true"></div><p class="state-sub">Connecting…</p></section>
+      </main>
+    </div>
     <script type="module" src="/src/voter.ts"></script>
   </body>
 </html>
