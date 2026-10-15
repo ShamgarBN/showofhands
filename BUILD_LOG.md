@@ -20,3 +20,11 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 
 - Vite + TypeScript, three pages (phone, projector, admin), GitHub Actions deploy to GitHub Pages.
 - Problem: the TypeScript check tried to type-check the Node-only Vite config. Fix: excluded it from the browser type check.
+
+## Stage 2: database
+
+- Reused an existing Supabase project (Paperplate) instead of making a new one, so I'd stay on the free plan.
+- **Notable catch:** before changing anything, Claude inspected the project and found that every Paperplate table lets *any signed-in user* read and delete everything. The original plan, anonymous sign-ins for phones, would have let anyone in the audience wipe my recipe app.
+- **Fix:** no anonymous sign-ins. Each phone gets a random browser ID and can only act through five small database functions. Paperplate's existing rules weren't touched.
+- Dry-ran the migration inside a transaction that rolled back, then applied it for real.
+- Ran 20 permission tests as an audience phone: vote twice, vote on a closed poll, vote for another poll's option, read others' votes, change the poll, see unapproved questions. All blocked; the allowed actions worked.
