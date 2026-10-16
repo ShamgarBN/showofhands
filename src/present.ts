@@ -1,1 +1,370 @@
 import './style.css';
+import QRCode from 'qrcode';
+import { ownerClient } from './lib/supabase';
+import { requireOwner } from './lib/auth';
+import { watchTables } from './lib/live';
+import { esc } from './lib/dom';
+import type { Option, Poll, PollStatus, Stage } from './lib/types';
+
+interface Result { option_id: string; real_votes: number; simulated_votes: number; manual_votes: number; total: number }
+
+const db = ownerClient();
+const root = document.getElementById('root')!;
+const joinUrl = new URL(import.meta.env.BASE_URL, location.origin).href;
+const joinUrlShort = joinUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+let stage: Stage | null = null;
+let poll: Poll | null = null;
+let options: Option[] = [];
+let results = new Map<string, Result>();
+let revealing = false;
+let resetArmedUntil = 0;
+const shown = new Map<string, number>(); // the count each row is currently displaying
+
+const STATUS_LABEL: Record<PollStatus, string> = { draft: 'Waiting', open: 'Open', closed: 'Closed', revealed: 'Revealed' };
+
+const SHORTCUTS: [string, string][] = [
+  ['O', 'Open voting'],
+  ['C', 'Close voting'],
+  ['R', 'Reveal the winner (closes voting first)'],
+  ['B', 'Blind mode on/off (hide counts)'],
+  ['A', '"Built with AI" panel on/off'],
+  ['F', 'Full screen on/off'],
+  ['X X', 'Reset all votes (press twice)'],
+  ['?', 'This cheat sheet'],
+  ['Esc', 'Close panels'],
+];
+
+await requireOwner(db, root);
+mount();
+
+// ---------------------------------------------------------------- layout
+
+function mount() {
+  root.innerHTML = `
+    <div class="screen" id="screen">
+      <header class="s-head">
+        <h1 class="s-title" id="title"></h1>
+        <span class="chip" id="status"></span>
+      </header>
+      <div class="s-body">
+        <div class="s-bars" id="bars"></div>
+        <aside class="s-join" id="join">
+          <div class="qr" id="qr" role="img" aria-label="QR code to vote"></div>
+          <p class="join-hint">Scan to vote</p>
+          <p class="join-url">${esc(joinUrlShort)}</p>
+        </aside>
+      </div>
+      <footer class="s-foot">
+        <span class="total" id="total"></span>
+        <span class="badge badge-blind" id="blind">Counts hidden until the reveal</span>
+        <span class="badge badge-sim" id="sim" hidden></span>
+        <span class="foot-right">
+          <span class="conn-dot" id="conn" title="Live connection"></span>
+          <span class="foot-hint">Press ? for shortcuts</span>
+        </span>
+      </footer>
+      <div class="overlay" id="ai" hidden></div>
+      <div class="overlay" id="cheats" hidden>
+        <div class="panel">
+          <h2>Keyboard shortcuts</h2>
+          <dl class="cheats">${SHORTCUTS.map(([k, d]) => `<dt><kbd>${esc(k)}</kbd></dt><dd>${esc(d)}</dd>`).join('')}</dl>
+        </div>
+      </div>
+      <div class="toast" id="toast" role="status"></div>
+      <div class="confetti" id="confetti" aria-hidden="true"></div>
+    </div>`;
+
+  QRCode.toString(joinUrl, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } })
+    .then(svg => { $('qr').innerHTML = svg; });
+
+  watchTables({
+    client: db,
+    tables: ['soh_stage', 'soh_polls', 'soh_options', 'soh_votes'],
+    refresh,
+    fallbackMs: 3000,
+    onStatus: s => $('conn').classList.toggle('is-down', s !== 'live'),
+  });
+}
+
+function $(id: string) {
+  return document.getElementById(id)!;
+}
+
+// ---------------------------------------------------------------- data
+
+async function refresh() {
+  const { data: st, error } = await db.from('soh_stage').select('*').eq('id', 1).maybeSingle<Stage>();
+  if (error) throw error;
+  stage = st;
+  if (stage?.poll_id) {
+    const [p, o, r] = await Promise.all([
+      db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id').eq('id', stage.poll_id).maybeSingle<Poll>(),
+      db.from('soh_options').select('*').eq('poll_id', stage.poll_id).order('sort_order'),
+      db.rpc('soh_results', { p_poll_id: stage.poll_id }),
+    ]);
+    if (p.error || o.error || r.error) throw p.error ?? o.error ?? r.error;
+    poll = p.data;
+    options = (o.data ?? []) as Option[];
+    results = new Map(((r.data ?? []) as Result[]).map(x => [x.option_id, x]));
+  } else {
+    poll = null;
+    options = [];
+    results = new Map();
+  }
+  render();
+}
+
+const totalFor = (id: string) => Number(results.get(id)?.total ?? 0);
+
+// ---------------------------------------------------------------- render
+
+function render() {
+  const screen = $('screen');
+  if (!poll) {
+    $('title').textContent = 'No poll selected';
+    $('bars').innerHTML = '<p class="empty">Pick a poll on the admin page.</p>';
+    return;
+  }
+
+  const blind = poll.blind_mode && poll.status !== 'revealed' && !revealing;
+  const revealed = poll.status === 'revealed';
+  screen.classList.toggle('is-blind', blind);
+  screen.classList.toggle('is-revealed', revealed || revealing);
+
+  $('title').textContent = poll.title;
+  const chip = $('status');
+  chip.textContent = STATUS_LABEL[poll.status];
+  chip.className = `chip chip-${poll.status}`;
+
+  const totals = options.map(o => totalFor(o.id));
+  const total = totals.reduce((a, b) => a + b, 0);
+  const max = Math.max(1, ...totals);
+  $('total').innerHTML = `<strong>${total}</strong> ${total === 1 ? 'vote' : 'votes'}`;
+  $('blind').hidden = !blind;
+
+  const sim = [...results.values()].reduce((a, r) => a + Number(r.simulated_votes), 0);
+  $('sim').hidden = sim === 0;
+  $('sim').textContent = `Includes ${sim} rehearsal ${sim === 1 ? 'vote' : 'votes'}`;
+
+  // Keyed rows so bars animate instead of being rebuilt.
+  const bars = $('bars');
+  bars.querySelector('.empty')?.remove();
+  const wanted = new Set(options.map(o => o.id));
+  bars.querySelectorAll<HTMLElement>('.row').forEach(row => { if (!wanted.has(row.dataset.id!)) row.remove(); });
+  options.forEach((o, i) => {
+    let row = bars.querySelector<HTMLElement>(`.row[data-id="${o.id}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'row';
+      row.dataset.id = o.id;
+      row.innerHTML = `
+        <div class="row-text"><span class="row-label"></span><span class="row-desc"></span></div>
+        <div class="track"><div class="fill"></div></div>
+        <span class="row-count">0</span>`;
+      shown.set(o.id, 0);
+    }
+    bars.appendChild(row); // keeps sort order
+    row.style.setProperty('--bar', `var(--bar-${(i % 4) + 1})`);
+    row.querySelector('.row-label')!.textContent = o.label;
+    row.querySelector('.row-desc')!.textContent = o.description;
+    const n = totalFor(o.id);
+    (row.querySelector('.fill') as HTMLElement).style.width = blind ? '0%' : `${(n / max) * 100}%`;
+    tweenCount(row, o.id, blind ? null : n);
+    if (!revealing) row.classList.toggle('is-winner', revealed && poll!.winner_option_id === o.id);
+    if (!revealing) row.classList.toggle('is-loser', revealed && poll!.winner_option_id !== o.id);
+  });
+
+  renderAiPanel();
+}
+
+function tweenCount(row: HTMLElement, id: string, target: number | null) {
+  const el = row.querySelector<HTMLElement>('.row-count')!;
+  if (target === null) { el.textContent = '?'; return; }
+  const from = shown.get(id) ?? 0;
+  if (from === target) { el.textContent = String(target); return; }
+  shown.set(id, target);
+  const start = performance.now();
+  const step = (now: number) => {
+    const t = Math.min(1, (now - start) / 700);
+    el.textContent = String(Math.round(from + (target - from) * (1 - Math.pow(1 - t, 3))));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function renderAiPanel() {
+  const panel = $('ai');
+  panel.hidden = !stage?.show_built_with_ai;
+  const stats = stage?.built_stats?.length ? stage.built_stats : [{ label: 'Stats', value: 'Fill these in on the admin page' }];
+  panel.innerHTML = `
+    <div class="panel panel-ai">
+      <p class="ai-kicker">Plot twist</p>
+      <h2>This voting app was built with AI</h2>
+      <dl class="ai-stats">${stats.map(s => `<div><dt>${esc(s.label)}</dt><dd>${esc(s.value)}</dd></div>`).join('')}</dl>
+    </div>`;
+}
+
+// ---------------------------------------------------------------- actions
+
+let toastTimer: number | undefined;
+function toast(text: string) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('is-on');
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => el.classList.remove('is-on'), 2200);
+}
+
+async function setPoll(patch: Partial<Poll>) {
+  if (!poll) return false;
+  const { error } = await db.from('soh_polls').update(patch).eq('id', poll.id);
+  if (error) { toast(`Didn't save: ${error.message}`); return false; }
+  Object.assign(poll, patch);
+  render();
+  return true;
+}
+
+async function setStage(patch: Partial<Stage>) {
+  const { error } = await db.from('soh_stage').update(patch).eq('id', 1);
+  if (error) { toast(`Didn't save: ${error.message}`); return; }
+  if (stage) Object.assign(stage, patch);
+  render();
+}
+
+async function openVoting() {
+  if (!poll) return;
+  if (poll.status === 'revealed') return toast('Already revealed. Press X twice to reset first.');
+  if (poll.status === 'open') return toast('Voting is already open');
+  if (await setPoll({ status: 'open' })) toast('Voting is OPEN');
+}
+
+async function closeVoting() {
+  if (poll?.status !== 'open') return toast('Voting isn’t open');
+  if (await setPoll({ status: 'closed' })) toast('Voting CLOSED');
+}
+
+async function reveal() {
+  if (!poll || revealing) return;
+  if (poll.status === 'revealed') return toast('Already revealed');
+  if (poll.status === 'draft') return toast('Open voting first (O)');
+  if (poll.status === 'open' && !(await setPoll({ status: 'closed' }))) return;
+
+  await refresh(); // latest counts, including last-second votes
+  const totals = options.map(o => ({ id: o.id, n: totalFor(o.id) }));
+  const best = Math.max(...totals.map(t => t.n));
+  if (best === 0) return toast('No votes to reveal yet');
+  const tied = totals.filter(t => t.n === best).map(t => t.id);
+  const winner = tied[Math.floor(Math.random() * tied.length)];
+
+  revealing = true;
+  render(); // drop blind mode: bars grow to their real sizes
+  await sleep(1600);
+
+  if (tied.length > 1) {
+    toast(`It's a ${tied.length}-way tie! Breaking it at random…`);
+    await sleep(900);
+    await spin(tied, winner);
+  }
+
+  crown(winner);
+  revealing = false;
+  await setPoll({ status: 'revealed', blind_mode: false, winner_option_id: winner });
+}
+
+/** Light up the tied rows in turn, slowing down, and land on the winner. */
+async function spin(ids: string[], winner: string) {
+  const rows = ids.map(id => $('bars').querySelector<HTMLElement>(`.row[data-id="${id}"]`)!);
+  const steps = 18 + ids.length * 2;
+  // start where the last step (steps - 1) lands exactly on the winner
+  const n = ids.length;
+  const i = (((ids.indexOf(winner) - (steps - 1)) % n) + n) % n;
+  for (let s = 0; s < steps; s++) {
+    rows.forEach(r => r.classList.remove('is-spin'));
+    rows[(i + s) % n].classList.add('is-spin');
+    await sleep(70 + Math.pow(s / steps, 3) * 520);
+  }
+  rows.forEach(r => r.classList.remove('is-spin'));
+}
+
+function crown(winner: string) {
+  $('bars').querySelectorAll<HTMLElement>('.row').forEach(r => {
+    r.classList.toggle('is-winner', r.dataset.id === winner);
+    r.classList.toggle('is-loser', r.dataset.id !== winner);
+  });
+  confetti();
+}
+
+function confetti() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const box = $('confetti');
+  const colors = ['#ffd23f', '#4dabf7', '#ff922b', '#e64980', '#51cf66', '#ffffff'];
+  box.innerHTML = Array.from({ length: 140 }, () => {
+    const style = [
+      `left:${Math.random() * 100}%`,
+      `background:${colors[Math.floor(Math.random() * colors.length)]}`,
+      `animation-delay:${Math.random() * 0.6}s`,
+      `animation-duration:${2.4 + Math.random() * 1.8}s`,
+      `--drift:${(Math.random() - 0.5) * 30}cqw`,
+      `--spin:${(Math.random() - 0.5) * 1440}deg`,
+    ].join(';');
+    return `<i style="${style}"></i>`;
+  }).join('');
+  setTimeout(() => { box.innerHTML = ''; }, 5000);
+}
+
+async function reset() {
+  if (!poll) return;
+  if (Date.now() > resetArmedUntil) {
+    resetArmedUntil = Date.now() + 2500;
+    return toast('Press X again to erase all votes for this poll');
+  }
+  resetArmedUntil = 0;
+  const id = poll.id;
+  const steps = await Promise.all([
+    db.from('soh_votes').delete().eq('poll_id', id),
+    db.from('soh_options').update({ manual_count: 0 }).eq('poll_id', id),
+  ]);
+  const failed = steps.find(s => s.error);
+  if (failed) return toast(`Reset failed: ${failed.error!.message}`);
+  await setPoll({ status: 'draft', winner_option_id: null });
+  $('bars').querySelectorAll('.row').forEach(r => r.classList.remove('is-winner', 'is-loser'));
+  shown.clear();
+  await refresh();
+  toast('Reset: all votes erased, back to Waiting');
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void document.documentElement.requestFullscreen().catch(() => toast('Full screen not allowed here'));
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- keyboard
+
+document.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if ((e.target as HTMLElement).closest('input, textarea')) return;
+  const key = e.key.toLowerCase();
+  const actions: Record<string, () => unknown> = {
+    o: openVoting,
+    c: closeVoting,
+    r: reveal,
+    b: () => poll && setPoll({ blind_mode: !poll.blind_mode }).then(ok => ok && toast(`Blind mode ${poll!.blind_mode ? 'ON' : 'OFF'}`)),
+    a: () => setStage({ show_built_with_ai: !stage?.show_built_with_ai }),
+    f: toggleFullscreen,
+    x: reset,
+    '?': () => { $('cheats').hidden = !$('cheats').hidden; },
+    h: () => { $('cheats').hidden = !$('cheats').hidden; },
+    escape: () => {
+      $('cheats').hidden = true;
+      if (stage?.show_built_with_ai) void setStage({ show_built_with_ai: false });
+    },
+  };
+  const action = actions[key];
+  if (action) {
+    e.preventDefault();
+    void action();
+  }
+});
