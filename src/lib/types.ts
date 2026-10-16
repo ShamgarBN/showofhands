@@ -6,6 +6,8 @@ export interface Poll {
   status: PollStatus;
   blind_mode: boolean;
   winner_option_id: string | null;
+  /** Countdown deadline (server time). The database rejects votes after it. */
+  closes_at: string | null;
 }
 
 export interface Option {
@@ -50,5 +52,8 @@ export interface PresenterApi {
   updatePoll(id: string, patch: Partial<Poll>): Promise<string | null>;
   updateStage(patch: Partial<Stage>): Promise<string | null>;
   resetVotes(pollId: string): Promise<string | null>;
+  startCountdown(pollId: string, seconds: number): Promise<string | null>;
+  /** Milliseconds to add to Date.now() to get server time. */
+  clockOffset(): Promise<number>;
   watch(refresh: () => Promise<void>, onLive: (live: boolean) => void): void;
 }

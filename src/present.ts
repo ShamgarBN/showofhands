@@ -13,13 +13,18 @@ let options: Option[] = [];
 let results = new Map<string, Result>();
 let revealing = false;
 let resetArmedUntil = 0;
+let clockOffset = 0; // add to Date.now() to get database time
+let autoRevealFor: string | null = null; // the deadline we've already auto-revealed for
+
+const COUNTDOWN_SECONDS = 30;
 const shown = new Map<string, number>(); // the count each row is currently displaying
 
 const STATUS_LABEL: Record<PollStatus, string> = { draft: 'Waiting', open: 'Open', closed: 'Closed', revealed: 'Revealed' };
 
 const SHORTCUTS: [string, string][] = [
   ['O', 'Open voting'],
-  ['C', 'Close voting'],
+  ['C', `Close in ${COUNTDOWN_SECONDS}s, then reveal (C again cancels)`],
+  ['Shift C', 'Close voting right now'],
   ['R', 'Reveal the winner (closes voting first)'],
   ['B', 'Blind mode on/off (hide counts)'],
   ['A', '"Built with AI" panel on/off'],
@@ -50,6 +55,7 @@ function mount() {
     <div class="screen" id="screen">
       <header class="s-head">
         <h1 class="s-title" id="title"></h1>
+        <span class="countdown" id="countdown" hidden></span>
         <span class="chip" id="status"></span>
       </header>
       <div class="s-body">
@@ -65,6 +71,7 @@ function mount() {
         <span class="badge badge-blind" id="blind">Counts hidden until the reveal</span>
         <span class="badge badge-sim" id="sim" hidden></span>
         <span class="foot-right">
+          <button type="button" class="stage-btn" id="stage-btn" hidden></button>
           <span class="conn-dot" id="conn" title="Live connection"></span>
           <span class="foot-hint">Press ? for shortcuts</span>
         </span>
@@ -84,6 +91,14 @@ function mount() {
     .then(svg => { $('qr').innerHTML = svg; });
 
   api.watch(refresh, live => $('conn').classList.toggle('is-down', !live));
+  void api.clockOffset().then(ms => { clockOffset = ms; });
+  setInterval(tick, 200);
+
+  $('stage-btn').addEventListener('click', e => {
+    (e.currentTarget as HTMLElement).blur(); // so Space/Enter don't re-trigger it
+    const step = stageStep();
+    if (step) void step.run();
+  });
 }
 
 function $(id: string) {
@@ -161,7 +176,51 @@ function render() {
     if (!revealing) row.classList.toggle('is-loser', revealed && poll!.winner_option_id !== o.id);
   });
 
+  const step = stageStep();
+  const btn = $('stage-btn');
+  btn.hidden = !step;
+  if (step) btn.innerHTML = `${esc(step.label)} <kbd>${esc(step.key)}</kbd>`;
+  btn.classList.toggle('is-cancel', !!step && step.key === 'C' && countdownActive());
+
   renderAiPanel();
+  tick();
+}
+
+/** The one next thing the presenter would do, for the on-screen button. */
+function stageStep(): { label: string; key: string; run: () => unknown } | null {
+  if (!poll || revealing) return null;
+  if (poll.status === 'draft') return { label: 'Open voting', key: 'O', run: openVoting };
+  if (poll.status === 'open') {
+    return countdownActive()
+      ? { label: 'Cancel countdown', key: 'C', run: countdownKey }
+      : { label: `Close in ${COUNTDOWN_SECONDS}s`, key: 'C', run: countdownKey };
+  }
+  if (poll.status === 'closed') return { label: 'Reveal winner', key: 'R', run: reveal };
+  return null;
+}
+
+const serverNow = () => Date.now() + clockOffset;
+
+function countdownActive() {
+  return poll?.status === 'open' && !!poll.closes_at;
+}
+
+/** Updates the countdown display; at zero, closes voting and reveals. */
+function tick() {
+  const el = $('countdown');
+  if (!countdownActive() || revealing) {
+    el.hidden = true;
+    return;
+  }
+  const deadline = poll!.closes_at!;
+  const left = Math.max(0, Math.ceil((Date.parse(deadline) - serverNow()) / 1000));
+  el.hidden = false;
+  el.textContent = `${left}s`;
+  el.classList.toggle('is-urgent', left <= 10);
+  if (left === 0 && autoRevealFor !== deadline) {
+    autoRevealFor = deadline;
+    void reveal();
+  }
 }
 
 function tweenCount(row: HTMLElement, id: string, target: number | null) {
@@ -222,12 +281,25 @@ async function openVoting() {
   if (!poll) return;
   if (poll.status === 'revealed') return toast('Already revealed. Press X twice to reset first.');
   if (poll.status === 'open') return toast('Voting is already open');
-  if (await setPoll({ status: 'open' })) toast('Voting is OPEN');
+  if (await setPoll({ status: 'open', closes_at: null })) toast('Voting is OPEN');
 }
 
-async function closeVoting() {
+async function closeNow() {
   if (poll?.status !== 'open') return toast('Voting isn’t open');
-  if (await setPoll({ status: 'closed' })) toast('Voting CLOSED');
+  if (await setPoll({ status: 'closed', closes_at: null })) toast('Voting CLOSED');
+}
+
+/** C: start the countdown, or cancel it if it's already running. */
+async function countdownKey() {
+  if (!poll || poll.status !== 'open') return toast('Voting isn’t open');
+  if (countdownActive()) {
+    if (await setPoll({ closes_at: null })) toast('Countdown cancelled, voting stays open');
+    return;
+  }
+  const error = await api.startCountdown(poll.id, COUNTDOWN_SECONDS);
+  if (error) return toast(`Didn't start: ${error}`);
+  await refresh();
+  toast(`Voting closes in ${COUNTDOWN_SECONDS} seconds`);
 }
 
 async function reveal() {
@@ -308,7 +380,7 @@ async function reset() {
   resetArmedUntil = 0;
   const error = await api.resetVotes(poll.id);
   if (error) return toast(`Reset failed: ${error}`);
-  await setPoll({ status: 'draft', winner_option_id: null });
+  await setPoll({ status: 'draft', winner_option_id: null, closes_at: null });
   $('bars').querySelectorAll('.row').forEach(r => r.classList.remove('is-winner', 'is-loser'));
   shown.clear();
   await refresh();
@@ -334,7 +406,7 @@ document.addEventListener('keydown', e => {
   const key = e.key.toLowerCase();
   const actions: Record<string, () => unknown> = {
     o: openVoting,
-    c: closeVoting,
+    c: () => (e.shiftKey ? closeNow() : countdownKey()),
     r: reveal,
     b: () => poll && setPoll({ blind_mode: !poll.blind_mode }).then(ok => ok && toast(`Blind mode ${poll!.blind_mode ? 'ON' : 'OFF'}`)),
     a: () => setStage({ show_built_with_ai: !stage?.show_built_with_ai }),

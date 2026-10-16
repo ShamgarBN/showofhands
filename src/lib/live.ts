@@ -1,5 +1,14 @@
 import type { RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 
+/** Milliseconds to add to Date.now() to match the database clock (so countdowns agree). */
+export async function serverClockOffset(db: SupabaseClient): Promise<number> {
+  const sent = Date.now();
+  const { data, error } = await db.rpc('soh_now');
+  if (error || !data) return 0;
+  const received = Date.now();
+  return new Date(data as string).getTime() - (sent + received) / 2;
+}
+
 export type LiveStatus = 'live' | 'polling';
 
 interface WatchOptions {

@@ -1,7 +1,7 @@
 import './style.css';
 import { phoneClient } from './lib/supabase';
 import { getVoterId } from './lib/voterId';
-import { watchTables } from './lib/live';
+import { serverClockOffset, watchTables } from './lib/live';
 import { esc } from './lib/dom';
 import type { Option, Poll, Stage } from './lib/types';
 
@@ -19,6 +19,7 @@ let flash: { kind: 'ok' | 'err'; text: string } | null = null;
 let failures = 0;
 let lastHtml = '';
 let connTimer: number | undefined;
+let clockOffset = 0; // add to Date.now() to get database time
 
 async function refresh() {
   try {
@@ -30,7 +31,7 @@ async function refresh() {
       options = [];
     } else {
       const [p, o] = await Promise.all([
-        db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id').eq('id', stage.poll_id).maybeSingle<Poll>(),
+        db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id,closes_at').eq('id', stage.poll_id).maybeSingle<Poll>(),
         db.from('soh_options').select('id,poll_id,label,description,sort_order').eq('poll_id', stage.poll_id).order('sort_order'),
       ]);
       if (p.error) throw p.error;
@@ -56,7 +57,7 @@ async function refresh() {
 }
 
 async function vote(optionId: string) {
-  if (!poll || poll.status !== 'open' || sending) return;
+  if (!poll || poll.status !== 'open' || secondsLeft() === 0 || sending) return;
   const previous = myOptionId;
   myOptionId = optionId; // show the choice immediately
   sending = true;
@@ -77,6 +78,18 @@ async function vote(optionId: string) {
   render();
 }
 
+const serverNow = () => Date.now() + clockOffset;
+
+/** Seconds left on the countdown, or null if there isn't one. */
+function secondsLeft(): number | null {
+  if (poll?.status !== 'open' || !poll.closes_at) return null;
+  return Math.max(0, Math.ceil((Date.parse(poll.closes_at) - serverNow()) / 1000));
+}
+
+function deadlineText(left: number) {
+  return `⏱ Voting closes in ${left}s`;
+}
+
 function optionLabel(id: string | null) {
   return options.find(o => o.id === id)?.label ?? '';
 }
@@ -88,9 +101,11 @@ function render() {
     html = state('Can’t reach the vote', 'Check your wifi or cellular. Retrying on its own…', 'spinner');
   } else if (!poll || poll.status === 'draft') {
     html = state('Voting opens soon', 'Keep this page open. It’ll switch on its own.', 'pulse');
-  } else if (poll.status === 'open') {
+  } else if (poll.status === 'open' && secondsLeft() !== 0) {
+    const left = secondsLeft();
     html = `
       <section class="ballot">
+        ${left !== null ? `<p class="deadline${left <= 10 ? ' is-urgent' : ''}" id="deadline">${deadlineText(left)}</p>` : ''}
         <h1 class="ballot-title">${esc(poll.title)}</h1>
         <p class="ballot-hint">Tap one. You can change it until voting closes.</p>
         <div class="choices" role="radiogroup" aria-label="${esc(poll.title)}">
@@ -108,7 +123,7 @@ function render() {
         </div>
         <p class="flash ${flash ? `flash-${flash.kind}` : ''}" role="status">${flash ? (flash.kind === 'ok' ? '✓ ' : '') + esc(flash.text) : (sending ? 'Sending…' : '&nbsp;')}</p>
       </section>`;
-  } else if (poll.status === 'closed') {
+  } else if (poll.status === 'closed' || poll.status === 'open') {
     html = state('Voting closed', 'Watch the screen!', 'eyes', myOptionId ? `You picked <strong>${esc(optionLabel(myOptionId))}</strong>` : '');
   } else {
     const winner = optionLabel(poll.winner_option_id);
@@ -143,6 +158,17 @@ view.addEventListener('click', e => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.choice');
   if (btn?.dataset.id) void vote(btn.dataset.id);
 });
+
+// Countdown: update the banner each tick; re-render when it crosses 10s or zero.
+setInterval(() => {
+  const left = secondsLeft();
+  const el = document.getElementById('deadline');
+  if (left === null || !el) return;
+  if (left === 0 || (left <= 10) !== el.classList.contains('is-urgent')) render();
+  else el.textContent = deadlineText(left);
+}, 250);
+
+void serverClockOffset(db).then(ms => { clockOffset = ms; render(); });
 
 watchTables({
   client: db,

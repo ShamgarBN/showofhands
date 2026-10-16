@@ -45,3 +45,11 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - Magic-link sign-in for the presenter; only my account is allowed in.
 - **Real-world snag:** I opened the sign-in link in the wrong browser, then hit Supabase's 2-emails-per-hour limit. Instead of waiting, Claude added a dev-only demo mode with fake votes, so the projector could be tested without signing in. It's stripped from the published site.
 - Problems found while testing: option names wrapped and pushed the last row off-screen at 1080p (fixed by restacking each row); the cheat sheet needed a second key (H) because some keyboards report Shift+/ differently.
+
+## Change request: 30-second countdown
+
+- My idea mid-build: voting stays open with no timer; I press a button and a 30-second countdown starts, then it closes and reveals automatically.
+- Claude built it end to end: a big countdown on the projector (red for the last 10 seconds), "Voting closes in 23s" on every phone, and an always-visible button on the projector that follows the flow: Open voting → Close in 30s → Cancel countdown → Reveal winner.
+- The **database** enforces the deadline, not just the screen: a vote one second late is rejected. Phones and projector sync to the database clock so they count down together.
+- C starts the countdown (C again cancels); Shift+C still closes immediately.
+- Bug caught in testing: the button stayed visible after the reveal because a style overrode "hidden". Fixed with one global rule.

@@ -6,7 +6,7 @@ import type { Option, Poll, PresenterApi, Result, Stage } from './types';
 
 export function demoApi(): PresenterApi {
   const forceTie = new URLSearchParams(location.search).get('demo') === 'tie';
-  const poll: Poll = { id: 'demo-poll', title: 'What should I build live?', status: 'draft', blind_mode: false, winner_option_id: null };
+  const poll: Poll = { id: 'demo-poll', title: 'What should I build live?', status: 'draft', blind_mode: false, winner_option_id: null, closes_at: null };
   const options: Option[] = [
     ['Walk-in waitlist board', 'A live list of who\'s waiting and how long, for a host stand or front counter.'],
     ['Staff shift scheduler', 'Build the week\'s shifts and let staff check them from their phones.'],
@@ -27,7 +27,7 @@ export function demoApi(): PresenterApi {
 
   // Votes trickle in while voting is open, like a real room.
   setInterval(() => {
-    if (poll.status !== 'open') return;
+    if (poll.status !== 'open' || (poll.closes_at && Date.parse(poll.closes_at) <= Date.now())) return;
     if (forceTie) {
       for (const id of ['demo-1', 'demo-2']) votes.set(id, votes.get(id)! + 1);
       if (Math.random() < 0.3) votes.set('demo-0', votes.get('demo-0')! + 1);
@@ -50,6 +50,12 @@ export function demoApi(): PresenterApi {
     },
     async updatePoll(_id, patch) { Object.assign(poll, patch); notify(); return null; },
     async updateStage(patch) { Object.assign(stage, patch); notify(); return null; },
+    async startCountdown(_id, seconds) {
+      poll.closes_at = new Date(Date.now() + seconds * 1000).toISOString();
+      notify();
+      return null;
+    },
+    async clockOffset() { return 0; },
     async resetVotes() { votes.forEach((_, k) => votes.set(k, 0)); notify(); return null; },
     watch(refresh, onLive) {
       notify = () => void refresh();

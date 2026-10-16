@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { watchTables } from './live';
+import { serverClockOffset, watchTables } from './live';
 import type { Option, Poll, PresenterApi, Result, Snapshot, Stage } from './types';
 
 export function supabaseApi(db: SupabaseClient): PresenterApi {
@@ -9,7 +9,7 @@ export function supabaseApi(db: SupabaseClient): PresenterApi {
       if (error) throw error;
       if (!stage?.poll_id) return { stage, poll: null, options: [], results: [] };
       const [p, o, r] = await Promise.all([
-        db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id').eq('id', stage.poll_id).maybeSingle<Poll>(),
+        db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id,closes_at').eq('id', stage.poll_id).maybeSingle<Poll>(),
         db.from('soh_options').select('*').eq('poll_id', stage.poll_id).order('sort_order'),
         db.rpc('soh_results', { p_poll_id: stage.poll_id }),
       ]);
@@ -34,6 +34,13 @@ export function supabaseApi(db: SupabaseClient): PresenterApi {
       ]);
       return steps.find(s => s.error)?.error?.message ?? null;
     },
+
+    async startCountdown(pollId, seconds) {
+      const { error } = await db.rpc('soh_start_countdown', { p_poll_id: pollId, p_seconds: seconds });
+      return error?.message ?? null;
+    },
+
+    clockOffset: () => serverClockOffset(db),
 
     watch(refresh, onLive) {
       watchTables({

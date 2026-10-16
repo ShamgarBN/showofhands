@@ -14,6 +14,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
@@ -353,3 +354,45 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .chip-open, .row.is-winner, .conn-dot.is-down { animation: none; }
 }
+
+/* ---------------------------------------------------------------- countdown + stage button */
+.s-head .countdown {
+  margin-left: auto;
+  font-size: 3.8cqw;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  line-height: 1;
+}
+.s-head .countdown.is-urgent { color: var(--closed); animation: tick-pulse 1s ease-in-out infinite; }
+@keyframes tick-pulse { 50% { transform: scale(1.12); } }
+
+.stage-btn {
+  font: 800 1.5cqw/1 system-ui, sans-serif;
+  color: #111;
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  padding: .7cqw 1.1cqw .7cqw 1.6cqw;
+  display: inline-flex;
+  align-items: center;
+  gap: .8cqw;
+  cursor: pointer;
+}
+.stage-btn:hover { filter: brightness(1.08); }
+.stage-btn kbd { font-size: 1.1cqw; min-width: 2.2cqw; padding: .35cqw .5cqw; background: rgba(0, 0, 0, .18); color: #111; border-bottom: 0; }
+.stage-btn.is-cancel { background: #2a3040; color: var(--text); }
+.stage-btn.is-cancel kbd { background: rgba(255, 255, 255, .12); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .s-head .countdown.is-urgent { animation: none; } }
+.deadline {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #3a2d0b;
+  color: var(--accent);
+  font-size: 19px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.deadline.is-urgent { background: #3a1620; color: #ff8fa3; }
