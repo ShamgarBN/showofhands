@@ -56,7 +56,11 @@ export function demoApi(): PresenterApi {
     async load() {
       return { stage: structuredClone(stage), poll: structuredClone(poll), options: structuredClone(options), results: results(), questions: structuredClone(questions) };
     },
-    async updatePoll(_id, patch) { Object.assign(poll, patch); notify(); return null; },
+    async updatePoll(_id, patch, onlyIfStatus) {
+      if (!onlyIfStatus || poll.status === onlyIfStatus) Object.assign(poll, patch);
+      notify();
+      return null;
+    },
     async updateStage(patch) { Object.assign(stage, patch); notify(); return null; },
     async startCountdown(_id, seconds) {
       poll.closes_at = new Date(Date.now() + seconds * 1000).toISOString();

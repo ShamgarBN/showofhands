@@ -120,6 +120,8 @@ async function refresh() {
   options = snap.options;
   results = new Map(snap.results.map(x => [x.option_id, x]));
   questions = snap.questions;
+  // Someone reset the poll (e.g. from the admin page) mid-reveal: stop.
+  if (revealing && poll?.status === 'draft') cancelReveal();
   render();
 
   // The admin page asked for a reveal (its "Reveal on projector" button).
@@ -345,9 +347,9 @@ function toast(text: string) {
   toastTimer = window.setTimeout(() => el.classList.remove('is-on'), 2200);
 }
 
-async function setPoll(patch: Partial<Poll>) {
+async function setPoll(patch: Partial<Poll>, onlyIfStatus?: PollStatus) {
   if (!poll) return false;
-  const error = await api.updatePoll(poll.id, patch);
+  const error = await api.updatePoll(poll.id, patch, onlyIfStatus);
   if (error) { toast(`Didn't save: ${error}`); return false; }
   Object.assign(poll, patch);
   render();
@@ -365,6 +367,7 @@ async function openVoting() {
   if (!poll) return;
   if (poll.status === 'revealed') return toast('Already revealed. Press X twice to reset first.');
   if (poll.status === 'open') return toast('Voting is already open');
+  cancelReveal();
   if (await setPoll({ status: 'open', closes_at: null })) toast('Voting is OPEN');
 }
 
@@ -386,42 +389,72 @@ async function countdownKey() {
   toast(`Voting closes in ${COUNTDOWN_SECONDS} seconds`);
 }
 
+/** The reveal in progress, if any. Reset or reopening clears it, which stops the animation. */
+let activeReveal: symbol | null = null;
+
+/** Stop a running reveal: it makes no further changes, and the screen shows the real state. */
+function cancelReveal() {
+  if (!activeReveal) return;
+  activeReveal = null;
+  revealing = false;
+  $('bars').querySelectorAll('.row').forEach(r => r.classList.remove('is-spin', 'is-winner', 'is-loser'));
+  $('confetti').innerHTML = '';
+}
+
 async function reveal() {
   if (!poll || revealing) return;
   if (poll.status === 'revealed') return toast('Already revealed');
   if (poll.status === 'draft') return toast('Open voting first (O)');
-  if (poll.status === 'open' && !(await setPoll({ status: 'closed' }))) return;
+
+  // Claim the reveal before any await, so a second trigger can't start another one.
+  const me = Symbol('reveal');
+  activeReveal = me;
+  revealing = true;
+  const stillMine = () => activeReveal === me;
+  const giveUp = (message?: string) => {
+    if (stillMine()) { activeReveal = null; revealing = false; render(); }
+    if (message) toast(message);
+  };
+
+  if (poll.status === 'open' && !(await setPoll({ status: 'closed' }))) return giveUp();
+  if (!stillMine()) return;
 
   await refresh(); // latest counts, including last-second votes
+  if (!stillMine()) return;
   const totals = options.map(o => ({ id: o.id, n: totalFor(o.id) }));
   const best = Math.max(...totals.map(t => t.n));
-  if (best === 0) return toast('No votes to reveal yet');
+  if (best === 0) return giveUp('No votes to reveal yet');
   const tied = totals.filter(t => t.n === best).map(t => t.id);
   const winner = tied[Math.floor(Math.random() * tied.length)];
 
-  revealing = true;
   render(); // drop blind mode: bars grow to their real sizes
   await sleep(2400); // let the bars grow before crowning anyone
+  if (!stillMine()) return;
 
   if (tied.length > 1) {
     toast(`It's a ${tied.length}-way tie! Breaking it at random…`);
     await sleep(900);
-    await spin(tied, winner);
+    if (!stillMine()) return;
+    await spin(tied, winner, stillMine);
+    if (!stillMine()) return;
   }
 
   crown(winner);
+  activeReveal = null;
   revealing = false;
-  await setPoll({ status: 'revealed', blind_mode: false, winner_option_id: winner });
+  // Only if the poll is still closed: a reset or reopen (here or from the admin page)
+  // during the animation must win over this late write.
+  await setPoll({ status: 'revealed', blind_mode: false, winner_option_id: winner }, 'closed');
 }
 
 /** Light up the tied rows in turn, slowing down, and land on the winner. */
-async function spin(ids: string[], winner: string) {
+async function spin(ids: string[], winner: string, keepGoing: () => boolean) {
   const rows = ids.map(id => $('bars').querySelector<HTMLElement>(`.row[data-id="${id}"]`)!);
   const steps = 18 + ids.length * 2;
   // start where the last step (steps - 1) lands exactly on the winner
   const n = ids.length;
   const i = (((ids.indexOf(winner) - (steps - 1)) % n) + n) % n;
-  for (let s = 0; s < steps; s++) {
+  for (let s = 0; s < steps && keepGoing(); s++) {
     rows.forEach(r => r.classList.remove('is-spin'));
     rows[(i + s) % n].classList.add('is-spin');
     await sleep(70 + Math.pow(s / steps, 3) * 520);
@@ -462,6 +495,7 @@ async function reset() {
     return toast('Press X again to erase all votes for this poll');
   }
   resetArmedUntil = 0;
+  cancelReveal();
   const error = await api.resetVotes(poll.id);
   if (error) return toast(`Reset failed: ${error}`);
   await setPoll({ status: 'draft', winner_option_id: null, closes_at: null });

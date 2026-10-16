@@ -2,7 +2,7 @@ import './style.css';
 import { ownerClient } from './lib/supabase';
 import { requireOwner } from './lib/auth';
 import { serverClockOffset, watchTables } from './lib/live';
-import { esc } from './lib/dom';
+import { esc, whenReleased } from './lib/dom';
 import type { Option, Poll, Question, QuestionStatus, Result, Stage } from './lib/types';
 
 const db = ownerClient();
@@ -35,7 +35,7 @@ function mount() {
         </nav>
       </header>
 
-      <section class="card" id="live"></section>
+      <section class="card" id="live"><div id="live-head"></div><div id="live-controls"></div><div id="live-results"></div></section>
       <section class="card" id="qa"></section>
 
       <div class="admin-grid">
@@ -119,6 +119,18 @@ function $(id: string) {
   return document.getElementById(id)!;
 }
 
+/**
+ * Redraw a section only when its content changed. Rebuilding on every update
+ * (several times a second while votes pour in) can swap a button out between
+ * mouse-down and mouse-up, which silently drops the click.
+ */
+const drawn = new Map<string, string>();
+function setHtml(id: string, html: string) {
+  if (drawn.get(id) === html) return;
+  drawn.set(id, html);
+  whenReleased(() => { if (drawn.get(id) === html) $(id).innerHTML = html; });
+}
+
 // ---------------------------------------------------------------- data
 
 async function refresh() {
@@ -158,7 +170,9 @@ const serverNow = () => Date.now() + clockOffset;
 function renderLive() {
   const poll = livePoll();
   if (!poll) {
-    $('live').innerHTML = `<h2>On stage</h2><p class="help">No poll on stage. Pick one below with “Put on stage”.</p>`;
+    setHtml('live-head', `<h2>On stage</h2><p class="help">No poll on stage. Pick one below with “Put on stage”.</p>`);
+    setHtml('live-controls', '');
+    setHtml('live-results', '');
     return;
   }
   const n = (id: string, k: keyof Result) => Number(results.get(id)?.[k] ?? 0);
@@ -166,18 +180,18 @@ function renderLive() {
   const sim = options.reduce((a, o) => a + n(o.id, 'simulated_votes'), 0);
   const counting = poll.status === 'open' && !!poll.closes_at;
 
-  $('live').innerHTML = `
-    <div class="live-head">
-      <div>
-        <h2>On stage: ${esc(poll.title)}</h2>
-        <p class="help">
-          <span class="chip chip-${poll.status} chip-sm">${{ draft: 'Waiting', open: 'Open', closed: 'Closed', revealed: 'Revealed' }[poll.status]}</span>
-          <span class="countdown-sm" id="countdown"></span>
-          ${total} ${total === 1 ? 'vote' : 'votes'}${sim ? ` <span class="sim-note">(${sim} rehearsal)</span>` : ''}
-          ${poll.blind_mode ? ' · Blind mode on' : ''}
-        </p>
-      </div>
-    </div>
+  // Changes with every vote: plain text only, no buttons.
+  setHtml('live-head', `
+    <h2>On stage: ${esc(poll.title)}</h2>
+    <p class="help">
+      <span class="chip chip-${poll.status} chip-sm">${{ draft: 'Waiting', open: 'Open', closed: 'Closed', revealed: 'Revealed' }[poll.status]}</span>
+      <span class="countdown-sm" id="countdown"></span>
+      ${total} ${total === 1 ? 'vote' : 'votes'}${sim ? ` <span class="sim-note">(${sim} rehearsal)</span>` : ''}
+      ${poll.blind_mode ? ' · Blind mode on' : ''}
+    </p>`);
+
+  // Buttons: redrawn only when the poll's state changes, never because a vote came in.
+  setHtml('live-controls', `
     <div class="controls">
       <button type="button" class="btn" data-act="open" ${poll.status === 'open' || poll.status === 'revealed' ? 'disabled' : ''}>Open voting</button>
       <button type="button" class="btn${counting ? ' btn-ghost' : ''}" data-act="countdown" ${poll.status !== 'open' ? 'disabled' : ''}>${counting ? 'Cancel countdown' : `Close in ${COUNTDOWN_SECONDS}s + reveal`}</button>
@@ -185,26 +199,36 @@ function renderLive() {
       <button type="button" class="btn" data-act="reveal" ${poll.status === 'draft' || poll.status === 'revealed' ? 'disabled' : ''}>Reveal on projector</button>
       <button type="button" class="btn btn-ghost" data-act="blind">${poll.blind_mode ? 'Show counts' : 'Hide counts (blind)'}</button>
       <button type="button" class="btn btn-danger" data-act="reset">Reset votes</button>
-    </div>
+    </div>`);
+
+  // Table layout (with the hand-count buttons) is redrawn only when options change;
+  // the numbers are filled in place below.
+  setHtml('live-results', `
     <table class="results">
       <thead><tr><th>Option</th><th>Phones</th><th>Rehearsal</th><th>By hand</th><th>Total</th></tr></thead>
       <tbody>
         ${options.map(o => `
-          <tr>
+          <tr data-row="${o.id}">
             <td>${esc(o.label)}${poll.winner_option_id === o.id ? ' 🏆' : ''}</td>
-            <td>${n(o.id, 'real_votes')}</td>
-            <td>${n(o.id, 'simulated_votes')}</td>
+            <td data-k="real_votes"></td>
+            <td data-k="simulated_votes"></td>
             <td class="manual">
               <button type="button" class="step" data-act="manual" data-id="${o.id}" data-delta="-1" aria-label="Remove a hand vote for ${esc(o.label)}" ${o.manual_count === 0 ? 'disabled' : ''}>−</button>
-              <span>${o.manual_count}</span>
+              <span data-k="manual_votes"></span>
               <button type="button" class="step" data-act="manual" data-id="${o.id}" data-delta="1" aria-label="Add a hand vote for ${esc(o.label)}">+</button>
               <button type="button" class="step step-wide" data-act="manual-set" data-id="${o.id}">Set…</button>
             </td>
-            <td><strong>${n(o.id, 'total')}</strong></td>
+            <td><strong data-k="total"></strong></td>
           </tr>`).join('')}
       </tbody>
     </table>
-    <p class="help">“By hand” is the show-of-hands fallback: count raised hands and type them in. They count toward the total on the projector.</p>`;
+    <p class="help">“By hand” is the show-of-hands fallback: count raised hands and type them in. They count toward the total on the projector.</p>`);
+  options.forEach(o => {
+    $('live-results').querySelectorAll<HTMLElement>(`tr[data-row="${o.id}"] [data-k]`).forEach(el => {
+      const k = el.dataset.k as keyof Result;
+      el.textContent = String(k === 'manual_votes' ? o.manual_count : n(o.id, k));
+    });
+  });
   renderCountdown();
 }
 
@@ -312,7 +336,7 @@ function renderQa() {
   const b = (act: string, id: string, label: string, cls = 'btn-ghost') =>
     `<button type="button" class="btn ${cls} btn-sm" data-act="${act}" data-id="${id}">${label}</button>`;
 
-  $('qa').innerHTML = `
+  setHtml('qa', `
     <div class="live-head">
       <h2>Audience Q&amp;A ${pending.length ? `<span class="pending-badge">${pending.length} waiting</span>` : ''}</h2>
       <div class="controls">
@@ -334,7 +358,7 @@ function renderQa() {
       <details class="mod-done">
         <summary>Answered and hidden (${done.length})</summary>
         <ul class="mod-list">${done.map(q => row(q, `<span class="help">${q.status}</span>` + b('q-approved', q.id, 'Restore'))).join('')}</ul>
-      </details>` : ''}`;
+      </details>` : ''}`);
 }
 
 async function setQuestion(id: string, status: QuestionStatus, ok: string) {
@@ -393,7 +417,7 @@ async function revokeModLink() {
 // ---------------------------------------------------------------- polls list + editor
 
 function renderPolls() {
-  $('polls').innerHTML = `
+  setHtml('polls', `
     <div class="live-head">
       <h2>Polls</h2>
       <button type="button" class="btn" data-act="new-poll">New poll</button>
@@ -408,7 +432,7 @@ function renderPolls() {
             <button type="button" class="btn btn-danger btn-sm" data-act="delete-poll" data-id="${p.id}" ${p.id === stage?.poll_id ? 'disabled title="Take it off stage first"' : ''}>Delete</button>
           </span>
         </li>`).join('') || '<li class="help">No polls yet.</li>'}
-    </ul>`;
+    </ul>`);
 }
 
 interface DraftOption { id: string | null; label: string; description: string }

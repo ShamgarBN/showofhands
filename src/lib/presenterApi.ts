@@ -22,8 +22,10 @@ export function supabaseApi(db: SupabaseClient): PresenterApi {
       return { stage, poll: p.data, options: (o.data ?? []) as Option[], results: (r.data ?? []) as Result[], questions };
     },
 
-    async updatePoll(id, patch) {
-      const { error } = await db.from('soh_polls').update(patch).eq('id', id);
+    async updatePoll(id, patch, onlyIfStatus) {
+      let query = db.from('soh_polls').update(patch).eq('id', id);
+      if (onlyIfStatus) query = query.eq('status', onlyIfStatus);
+      const { error } = await query;
       return error?.message ?? null;
     },
 

@@ -1,7 +1,7 @@
 import './style.css';
 import { phoneClient } from './lib/supabase';
 import { watchTables } from './lib/live';
-import { esc } from './lib/dom';
+import { esc, whenReleased } from './lib/dom';
 import type { Question, QuestionStatus, Stage } from './lib/types';
 
 interface ModQuestion extends Question { on_screen: boolean }
@@ -105,10 +105,13 @@ function render() {
       </details>` : ''}`;
 
   if (html !== lastHtml) {
-    const open = view.querySelector('details')?.open; // keep the "done" list open across refreshes
-    view.innerHTML = html;
-    if (open) view.querySelector('details')?.setAttribute('open', '');
     lastHtml = html;
+    whenReleased(() => {
+      if (lastHtml !== html) return; // a newer render is queued
+      const open = view.querySelector('details')?.open; // keep the "done" list open across refreshes
+      view.innerHTML = html;
+      if (open) view.querySelector('details')?.setAttribute('open', '');
+    });
   }
 }
 

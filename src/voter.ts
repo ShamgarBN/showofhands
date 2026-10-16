@@ -2,7 +2,7 @@ import './style.css';
 import { phoneClient } from './lib/supabase';
 import { getVoterId } from './lib/voterId';
 import { offsetFrom, pollEvery } from './lib/live';
-import { esc } from './lib/dom';
+import { esc, whenReleased } from './lib/dom';
 import type { Option, Poll, PublicQuestion, Stage } from './lib/types';
 
 const db = phoneClient();
@@ -159,8 +159,8 @@ function render() {
   }
 
   if (html !== lastHtml) {
-    view.innerHTML = html;
     lastHtml = html;
+    whenReleased(() => { if (lastHtml === html) view.innerHTML = html; });
   }
 }
 

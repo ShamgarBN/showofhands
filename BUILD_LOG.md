@@ -90,3 +90,13 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - Every request now gives up after 8 seconds, so a stalled venue network can't freeze a screen.
 - Older phones: works back to iOS 15 Safari (fallbacks for three newer browser features).
 - Bug found along the way: after a reset, a phone kept showing the vote it had cast before. Now the phone always follows the server's record.
+
+## Full-system test with real sign-in
+
+Ran everything together: projector, admin, moderator and a phone, on the live database.
+
+- **Worked end to end:** poll editor (create, reorder, put on stage, projector switched live), Built-with-AI panel, moderator link created from admin, rehearsal trickle with the red badge, hand counts, 30-second countdown → automatic close → 3-way tie spin → winner on projector and phone, "Reveal on projector" path, Q&A from phone → moderator approve → on screen → upvote shows on projector → N marks it answered everywhere, revoking the link locks the moderator out.
+- **Bug 1 (found by testing):** the admin page redrew its buttons on every incoming vote, so a click could land on a button that had just been replaced and silently do nothing. Fix: buttons only redraw when the poll's state changes, vote counts update in place, and no screen redraws while a mouse button or finger is pressed.
+- **Bug 2 (found by testing):** resetting during the tie-break animation got overwritten when the animation finished ("Revealed" came back). Fix: only one reveal can run at a time, reset or reopen cancels it, and the final "Revealed" write only happens if the poll is still closed, so even a reset from the admin page in another window wins.
+- A phone in a background browser tab lagged a few seconds; with the tab in front (like a real phone), it switched in 1.9 seconds. The browser slows background tabs; not an app problem.
+- Permission checks re-run after the fixes: 30/30 pass.

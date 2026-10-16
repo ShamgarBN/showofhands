@@ -71,7 +71,8 @@ export interface Snapshot {
 export interface PresenterApi {
   load(): Promise<Snapshot>;
   /** Each returns an error message, or null on success. */
-  updatePoll(id: string, patch: Partial<Poll>): Promise<string | null>;
+  /** onlyIfStatus: skip the write unless the poll is still in that status. */
+  updatePoll(id: string, patch: Partial<Poll>, onlyIfStatus?: PollStatus): Promise<string | null>;
   updateStage(patch: Partial<Stage>): Promise<string | null>;
   resetVotes(pollId: string): Promise<string | null>;
   startCountdown(pollId: string, seconds: number): Promise<string | null>;
