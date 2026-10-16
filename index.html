@@ -13,9 +13,26 @@
         <span class="brand">Show of Hands</span>
         <span class="conn" id="conn" hidden>Reconnecting…</span>
       </header>
-      <main id="view" aria-live="polite">
+      <nav class="tabs" role="tablist" aria-label="Show of Hands">
+        <button type="button" role="tab" id="tab-vote" aria-controls="view" aria-selected="true">Vote</button>
+        <button type="button" role="tab" id="tab-ask" aria-controls="ask" aria-selected="false">Ask a question</button>
+      </nav>
+      <main id="view" role="tabpanel" aria-labelledby="tab-vote" aria-live="polite">
         <section class="state"><div class="spinner" aria-hidden="true"></div><p class="state-sub">Connecting…</p></section>
       </main>
+      <section id="ask" role="tabpanel" aria-labelledby="tab-ask" hidden>
+        <form class="ask-form" id="ask-form">
+          <label for="ask-text" class="ask-label">Your question</label>
+          <textarea id="ask-text" maxlength="280" rows="3" placeholder="Type your question…" enterkeyhint="send"></textarea>
+          <div class="ask-row">
+            <span class="ask-count" id="ask-count">0 / 280</span>
+            <button type="submit" class="btn" id="ask-send">Send</button>
+          </div>
+          <p class="ask-note">Questions show up after the presenter approves them. No names collected.</p>
+          <p class="flash" id="ask-flash" role="status">&nbsp;</p>
+        </form>
+        <div id="q-list" aria-live="polite"></div>
+      </section>
     </div>
     <script type="module" src="/src/voter.ts"></script>
   </body>

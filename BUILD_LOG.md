@@ -62,3 +62,12 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - Rehearsal mode: N fake voters trickle in over T seconds with uneven odds, flagged as rehearsal, red badge on the projector, one-click wipe.
 - Poll editor: create, rename, add/remove/reorder options. Editing keeps existing options' votes; removing one asks first.
 - "Built with AI" stats editor and an on/off switch for the projector panel.
+
+## Stage 6: audience Q&A (stretch goal)
+
+- Phones get **Vote** and **Ask a question** tabs, and switch automatically to whichever one the projector is showing.
+- Unlimited questions per phone, 280 characters max, no names. Each phone sees approved questions plus its own pending ones, and can upvote once per question.
+- Nothing reaches the projector or other phones until I approve it on the admin page (Approve / Hide / Put on screen / Answered / Restore).
+- Projector Q&A mode (key Q): a "Now answering" card plus the top questions by upvotes. N marks the current one answered and puts the next most-upvoted on screen.
+- Design wrinkle: phones aren't allowed to read the questions table (so they never see others' phone IDs or unapproved questions), which also means they get no live events from it. Fix: a database trigger bumps a counter on the stage whenever a question is moderated; phones see that and refetch.
+- Re-ran the 20 permission checks after all the changes. Two "failed" on the first run, but because of my leftover test question, not a security gap; tightened the test to check only what matters, and all 20 pass.

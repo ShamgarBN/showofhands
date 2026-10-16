@@ -1,7 +1,7 @@
 import './style.css';
 import QRCode from 'qrcode';
 import { esc } from './lib/dom';
-import type { Option, Poll, PollStatus, PresenterApi, Result, Stage } from './lib/types';
+import type { Option, Poll, PollStatus, PresenterApi, Question, Result, Stage } from './lib/types';
 
 const root = document.getElementById('root')!;
 const joinUrl = new URL(import.meta.env.BASE_URL, location.origin).href;
@@ -11,6 +11,7 @@ let stage: Stage | null = null;
 let poll: Poll | null = null;
 let options: Option[] = [];
 let results = new Map<string, Result>();
+let questions: Question[] = [];
 let revealing = false;
 let resetArmedUntil = 0;
 let clockOffset = 0; // add to Date.now() to get database time
@@ -27,6 +28,8 @@ const SHORTCUTS: [string, string][] = [
   ['Shift C', 'Close voting right now'],
   ['R', 'Reveal the winner (closes voting first)'],
   ['B', 'Blind mode on/off (hide counts)'],
+  ['Q', 'Switch between the poll and Q&A'],
+  ['N', 'Q&A: next question (marks the current one answered)'],
   ['A', '"Built with AI" panel on/off'],
   ['F', 'Full screen on/off'],
   ['X X', 'Reset all votes (press twice)'],
@@ -60,9 +63,10 @@ function mount() {
       </header>
       <div class="s-body">
         <div class="s-bars" id="bars"></div>
+        <div class="s-qa" id="qa"></div>
         <aside class="s-join" id="join">
           <div class="qr" id="qr" role="img" aria-label="QR code to vote"></div>
-          <p class="join-hint">Scan to vote</p>
+          <p class="join-hint" id="join-hint">Scan to vote</p>
           <p class="join-url">${esc(joinUrlShort)}</p>
         </aside>
       </div>
@@ -115,6 +119,7 @@ async function refresh() {
   poll = snap.poll;
   options = snap.options;
   results = new Map(snap.results.map(x => [x.option_id, x]));
+  questions = snap.questions;
   render();
 
   // The admin page asked for a reveal (its "Reveal on projector" button).
@@ -131,6 +136,24 @@ const totalFor = (id: string) => Number(results.get(id)?.total ?? 0);
 // ---------------------------------------------------------------- render
 
 function render() {
+  const qa = stage?.mode === 'qa';
+  $('screen').classList.toggle('is-qa', qa);
+  $('join-hint').textContent = qa ? 'Scan to ask a question' : 'Scan to vote';
+  $('status').hidden = qa;
+  if (qa) renderQa();
+  else renderPoll();
+
+  const step = stageStep();
+  const btn = $('stage-btn');
+  btn.hidden = !step;
+  if (step) btn.innerHTML = `${esc(step.label)} <kbd>${esc(step.key)}</kbd>`;
+  btn.classList.toggle('is-cancel', !!step && step.key === 'C' && countdownActive());
+
+  renderAiPanel();
+  tick();
+}
+
+function renderPoll() {
   const screen = $('screen');
   if (!poll) {
     $('title').textContent = 'No poll selected';
@@ -185,19 +208,70 @@ function render() {
     if (!revealing) row.classList.toggle('is-winner', revealed && poll!.winner_option_id === o.id);
     if (!revealing) row.classList.toggle('is-loser', revealed && poll!.winner_option_id !== o.id);
   });
+}
 
-  const step = stageStep();
-  const btn = $('stage-btn');
-  btn.hidden = !step;
-  if (step) btn.innerHTML = `${esc(step.label)} <kbd>${esc(step.key)}</kbd>`;
-  btn.classList.toggle('is-cancel', !!step && step.key === 'C' && countdownActive());
+// ---------------------------------------------------------------- Q&A mode
 
-  renderAiPanel();
-  tick();
+/** The question on screen right now, if it's still approved. */
+function featuredQuestion() {
+  return questions.find(q => q.id === stage?.onscreen_question_id && q.status === 'approved') ?? null;
+}
+
+/** Approved questions waiting their turn, most upvoted first. */
+function questionQueue() {
+  const featured = featuredQuestion();
+  return questions
+    .filter(q => q.status === 'approved' && q.id !== featured?.id)
+    .sort((a, b) => b.upvotes - a.upvotes || a.created_at.localeCompare(b.created_at));
+}
+
+function renderQa() {
+  const featured = featuredQuestion();
+  const queue = questionQueue();
+  $('title').textContent = 'Questions from the room';
+  const approved = queue.length + (featured ? 1 : 0);
+  $('total').innerHTML = `<strong>${approved}</strong> ${approved === 1 ? 'question' : 'questions'}`;
+  $('blind').hidden = true;
+  $('sim').hidden = true;
+
+  const votes = (n: number) => `<span class="qa-votes"><span aria-hidden="true">▲</span> ${n}</span>`;
+  $('qa').innerHTML = `
+    ${featured ? `
+      <div class="qa-featured">
+        <p class="qa-kicker">Now answering</p>
+        <p class="qa-featured-body">${esc(featured.body)}</p>
+        ${votes(featured.upvotes)}
+      </div>` : ''}
+    ${queue.length ? `
+      <ol class="qa-list">
+        ${queue.slice(0, featured ? 3 : 5).map(q => `<li>${votes(q.upvotes)}<span class="qa-body">${esc(q.body)}</span></li>`).join('')}
+      </ol>` : ''}
+    ${!featured && !queue.length ? '<p class="empty">Scan the code and ask away. Questions appear here once approved.</p>' : ''}`;
+}
+
+/** N: mark the current question answered and put the top one on screen. */
+async function nextQuestion() {
+  if (stage?.mode !== 'qa') return;
+  const featured = featuredQuestion();
+  if (featured) {
+    const error = await api.updateQuestion(featured.id, { status: 'answered' });
+    if (error) return toast(`Didn't save: ${error}`);
+  }
+  const next = questionQueue()[0];
+  await setStage({ onscreen_question_id: next?.id ?? null });
+  if (!next) toast('No more questions in the queue');
+}
+
+function toggleQa() {
+  return setStage({ mode: stage?.mode === 'qa' ? 'poll' : 'qa' });
 }
 
 /** The one next thing the presenter would do, for the on-screen button. */
 function stageStep(): { label: string; key: string; run: () => unknown } | null {
+  if (stage?.mode === 'qa') {
+    if (questionQueue().length) return { label: featuredQuestion() ? 'Next question' : 'Show top question', key: 'N', run: nextQuestion };
+    return featuredQuestion() ? { label: 'Done with this one', key: 'N', run: nextQuestion } : null;
+  }
   if (!poll || revealing) return null;
   if (poll.status === 'draft') return { label: 'Open voting', key: 'O', run: openVoting };
   if (poll.status === 'open') {
@@ -420,6 +494,8 @@ document.addEventListener('keydown', e => {
     r: reveal,
     b: () => poll && setPoll({ blind_mode: !poll.blind_mode }).then(ok => ok && toast(`Blind mode ${poll!.blind_mode ? 'ON' : 'OFF'}`)),
     a: () => setStage({ show_built_with_ai: !stage?.show_built_with_ai }),
+    q: toggleQa,
+    n: nextQuestion,
     f: toggleFullscreen,
     x: reset,
     '?': toggleCheats,

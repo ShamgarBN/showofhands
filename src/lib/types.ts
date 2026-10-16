@@ -29,6 +29,8 @@ export interface Stage {
   built_stats: { label: string; value: string }[];
   /** Goes up when the admin page asks the projector to reveal. */
   reveal_requests: number;
+  /** Goes up when the owner moderates questions, so phones refetch. */
+  qa_version: number;
 }
 
 export interface Result {
@@ -39,12 +41,30 @@ export interface Result {
   total: number;
 }
 
+export type QuestionStatus = 'pending' | 'approved' | 'hidden' | 'answered';
+
+/** A question as the owner sees it (no phone IDs). */
+export interface Question {
+  id: string;
+  body: string;
+  status: QuestionStatus;
+  upvotes: number;
+  created_at: string;
+}
+
+/** A question as a phone sees it. */
+export interface PublicQuestion extends Question {
+  upvoted: boolean;
+  mine: boolean;
+}
+
 /** Everything the projector shows, loaded in one go. */
 export interface Snapshot {
   stage: Stage | null;
   poll: Poll | null;
   options: Option[];
   results: Result[];
+  questions: Question[];
 }
 
 /** Where the projector reads and writes. Real = Supabase; demo = in-memory (dev only). */
@@ -55,6 +75,7 @@ export interface PresenterApi {
   updateStage(patch: Partial<Stage>): Promise<string | null>;
   resetVotes(pollId: string): Promise<string | null>;
   startCountdown(pollId: string, seconds: number): Promise<string | null>;
+  updateQuestion(id: string, patch: Partial<Question>): Promise<string | null>;
   /** Milliseconds to add to Date.now() to get server time. */
   clockOffset(): Promise<number>;
   watch(refresh: () => Promise<void>, onLive: (live: boolean) => void): void;

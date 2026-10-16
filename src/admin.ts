@@ -3,7 +3,7 @@ import { ownerClient } from './lib/supabase';
 import { requireOwner } from './lib/auth';
 import { serverClockOffset, watchTables } from './lib/live';
 import { esc } from './lib/dom';
-import type { Option, Poll, Result, Stage } from './lib/types';
+import type { Option, Poll, Question, QuestionStatus, Result, Stage } from './lib/types';
 
 const db = ownerClient();
 const root = document.getElementById('root')!;
@@ -13,6 +13,7 @@ let stage: Stage | null = null;
 let polls: Poll[] = [];
 let options: Option[] = []; // options of the poll on stage
 let results = new Map<string, Result>();
+let questions: Question[] = [];
 let clockOffset = 0;
 let editingPollId: string | null = null; // null = editor closed, 'new' = creating
 let trickle: { timer: number; left: number } | null = null;
@@ -35,6 +36,7 @@ function mount() {
       </header>
 
       <section class="card" id="live"></section>
+      <section class="card" id="qa"></section>
 
       <div class="admin-grid">
         <section class="card">
@@ -81,7 +83,7 @@ function mount() {
   let statsLoaded = false;
   watchTables({
     client: db,
-    tables: ['soh_stage', 'soh_polls', 'soh_options', 'soh_votes'],
+    tables: ['soh_stage', 'soh_polls', 'soh_options', 'soh_votes', 'soh_questions', 'soh_question_upvotes'],
     refresh: async () => {
       await refresh();
       if (!statsLoaded && stage) { renderStats(); statsLoaded = true; }
@@ -97,13 +99,15 @@ function $(id: string) {
 // ---------------------------------------------------------------- data
 
 async function refresh() {
-  const [st, ps] = await Promise.all([
+  const [st, ps, qs] = await Promise.all([
     db.from('soh_stage').select('*').eq('id', 1).maybeSingle<Stage>(),
     db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id,closes_at').order('created_at'),
+    db.rpc('soh_all_questions'),
   ]);
-  if (st.error || ps.error) throw st.error ?? ps.error;
+  if (st.error || ps.error || qs.error) throw st.error ?? ps.error ?? qs.error;
   stage = st.data;
   polls = (ps.data ?? []) as Poll[];
+  questions = (qs.data ?? []) as Question[];
 
   if (stage?.poll_id) {
     const [o, r] = await Promise.all([
@@ -118,6 +122,7 @@ async function refresh() {
     results = new Map();
   }
   renderLive();
+  renderQa();
   renderPolls();
   ($('ai-show') as HTMLInputElement).checked = !!stage?.show_built_with_ai;
 }
@@ -229,6 +234,20 @@ async function onClick(e: Event) {
     }
     case 'stage':
       return setStage({ poll_id: id }, 'Poll is on stage');
+    case 'mode':
+      return setStage({ mode: id as Stage['mode'] }, id === 'qa' ? 'Projector shows Q&A' : 'Projector shows the poll');
+    case 'qa-open':
+      return setStage({ qa_open: !stage?.qa_open }, stage?.qa_open ? 'Questions closed' : 'Taking questions');
+    case 'q-approved':
+      return setQuestion(id, 'approved', 'Approved');
+    case 'q-hidden':
+      return setQuestion(id, 'hidden', 'Hidden');
+    case 'q-answered':
+      return setQuestion(id, 'answered', 'Marked answered');
+    case 'q-screen':
+      return setStage({ onscreen_question_id: id, mode: 'qa' }, 'On the projector');
+    case 'q-offscreen':
+      return setStage({ onscreen_question_id: null }, 'Taken off screen');
     case 'edit':
       return openEditor(id);
     case 'new-poll':
@@ -249,6 +268,57 @@ async function resetPoll(pollId: string) {
   ]);
   const failed = steps.find(s => s.error);
   toast(failed ? `Reset failed: ${failed.error!.message}` : 'Reset: votes erased, back to Waiting');
+}
+
+// ---------------------------------------------------------------- Q&A moderation
+
+function renderQa() {
+  const by = (st: QuestionStatus) => questions.filter(q => q.status === st);
+  const pending = by('pending');
+  const approved = by('approved').sort((a, b) => b.upvotes - a.upvotes);
+  const done = questions.filter(q => q.status === 'answered' || q.status === 'hidden');
+  const onScreen = stage?.onscreen_question_id;
+  const qaMode = stage?.mode === 'qa';
+
+  const row = (q: Question, buttons: string) => `
+    <li class="mod-row${q.id === onScreen && q.status === 'approved' ? ' is-onscreen' : ''}">
+      <span class="mod-votes" title="Upvotes">▲ ${q.upvotes}</span>
+      <span class="mod-body">${esc(q.body)}${q.id === onScreen && q.status === 'approved' ? ' <span class="on-stage">ON SCREEN</span>' : ''}</span>
+      <span class="mod-actions">${buttons}</span>
+    </li>`;
+  const b = (act: string, id: string, label: string, cls = 'btn-ghost') =>
+    `<button type="button" class="btn ${cls} btn-sm" data-act="${act}" data-id="${id}">${label}</button>`;
+
+  $('qa').innerHTML = `
+    <div class="live-head">
+      <h2>Audience Q&amp;A ${pending.length ? `<span class="pending-badge">${pending.length} waiting</span>` : ''}</h2>
+      <div class="controls">
+        <button type="button" class="btn ${qaMode ? 'btn-ghost' : ''}" data-act="mode" data-id="${qaMode ? 'poll' : 'qa'}">${qaMode ? 'Projector: back to poll' : 'Projector: show Q&A'}</button>
+        <button type="button" class="btn btn-ghost" data-act="qa-open">${stage?.qa_open ? 'Stop taking questions' : 'Start taking questions'}</button>
+      </div>
+    </div>
+    <p class="help">${stage?.qa_open ? 'Phones can send questions.' : 'Phones can’t send questions right now.'} Nothing reaches the projector or other phones until you approve it.</p>
+
+    <h3>Waiting for approval</h3>
+    <ul class="mod-list">${pending.map(q => row(q, b('q-approved', q.id, 'Approve', '') + b('q-hidden', q.id, 'Hide', 'btn-danger'))).join('') || '<li class="help">Nothing waiting.</li>'}</ul>
+
+    <h3>Approved (most upvoted first)</h3>
+    <ul class="mod-list">${approved.map(q => row(q,
+      (q.id === onScreen ? b('q-offscreen', q.id, 'Take off screen') : b('q-screen', q.id, 'Put on screen', '')) +
+      b('q-answered', q.id, 'Answered') + b('q-hidden', q.id, 'Hide', 'btn-danger'))).join('') || '<li class="help">None yet.</li>'}</ul>
+
+    ${done.length ? `
+      <details class="mod-done">
+        <summary>Answered and hidden (${done.length})</summary>
+        <ul class="mod-list">${done.map(q => row(q, `<span class="help">${q.status}</span>` + b('q-approved', q.id, 'Restore'))).join('')}</ul>
+      </details>` : ''}`;
+}
+
+async function setQuestion(id: string, status: QuestionStatus, ok: string) {
+  const { error } = await db.from('soh_questions').update({ status }).eq('id', id);
+  if (error) return toast(`Didn't save: ${error.message}`);
+  if (status !== 'approved' && stage?.onscreen_question_id === id) await setStage({ onscreen_question_id: null });
+  toast(ok);
 }
 
 // ---------------------------------------------------------------- polls list + editor

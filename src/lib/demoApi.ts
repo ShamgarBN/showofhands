@@ -2,7 +2,7 @@
  * DEV ONLY: fake data so the projector can be tested and rehearsed without signing in.
  * Open present.html?demo (or ?demo=tie to force a tie). Never included in the production build.
  */
-import type { Option, Poll, PresenterApi, Result, Stage } from './types';
+import type { Option, Poll, PresenterApi, Question, Result, Stage } from './types';
 
 export function demoApi(): PresenterApi {
   const forceTie = new URLSearchParams(location.search).get('demo') === 'tie';
@@ -14,7 +14,7 @@ export function demoApi(): PresenterApi {
     ['Plate cost calculator', 'Enter ingredient costs and get the true cost and a suggested price per dish.'],
   ].map(([label, description], i) => ({ id: `demo-${i}`, poll_id: poll.id, label, description, sort_order: i + 1, manual_count: 0 }));
   const stage: Stage = {
-    id: 1, poll_id: poll.id, mode: 'poll', qa_open: true, onscreen_question_id: null, show_built_with_ai: false, reveal_requests: 0,
+    id: 1, poll_id: poll.id, mode: 'poll', qa_open: true, onscreen_question_id: null, show_built_with_ai: false, reveal_requests: 0, qa_version: 0,
     built_stats: [
       { label: 'Time to build', value: '3.5 hrs' },
       { label: 'Prompts', value: '42' },
@@ -22,6 +22,14 @@ export function demoApi(): PresenterApi {
     ],
   };
   const votes = new Map(options.map(o => [o.id, 0]));
+  const questions: Question[] = [
+    'How much does it cost to run an app like this?',
+    'Do I need to know how to code to do this?',
+    'How do I keep customer data safe if AI writes the code?',
+    'What happens if the AI makes a mistake?',
+    'Can it connect to my point-of-sale system?',
+    'Is any of my data used to train the AI?',
+  ].map((body, i) => ({ id: `demo-q${i}`, body, status: 'approved', upvotes: [9, 14, 21, 6, 3, 11][i], created_at: new Date(Date.now() - i * 60000).toISOString() }));
   const weights = [0.3, 0.2, 0.35, 0.15];
   let notify: () => void = () => {};
 
@@ -46,7 +54,7 @@ export function demoApi(): PresenterApi {
 
   return {
     async load() {
-      return { stage: structuredClone(stage), poll: structuredClone(poll), options: structuredClone(options), results: results() };
+      return { stage: structuredClone(stage), poll: structuredClone(poll), options: structuredClone(options), results: results(), questions: structuredClone(questions) };
     },
     async updatePoll(_id, patch) { Object.assign(poll, patch); notify(); return null; },
     async updateStage(patch) { Object.assign(stage, patch); notify(); return null; },
@@ -56,6 +64,7 @@ export function demoApi(): PresenterApi {
       return null;
     },
     async clockOffset() { return 0; },
+    async updateQuestion(id, patch) { Object.assign(questions.find(q => q.id === id) ?? {}, patch); notify(); return null; },
     async resetVotes() { votes.forEach((_, k) => votes.set(k, 0)); notify(); return null; },
     watch(refresh, onLive) {
       notify = () => void refresh();

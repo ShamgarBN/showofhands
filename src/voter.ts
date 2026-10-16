@@ -3,7 +3,7 @@ import { phoneClient } from './lib/supabase';
 import { getVoterId } from './lib/voterId';
 import { serverClockOffset, watchTables } from './lib/live';
 import { esc } from './lib/dom';
-import type { Option, Poll, Stage } from './lib/types';
+import type { Option, Poll, PublicQuestion, Stage } from './lib/types';
 
 const db = phoneClient();
 const voterId = getVoterId();
@@ -21,10 +21,38 @@ let lastHtml = '';
 let connTimer: number | undefined;
 let clockOffset = 0; // add to Date.now() to get database time
 
+// Q&A
+type Tab = 'vote' | 'ask';
+let tab: Tab = 'vote';
+let stageMode: Stage['mode'] | null = null;
+let qaOpen = true;
+let qaVersion: number | null = null;
+let questions: PublicQuestion[] = [];
+let questionsLoaded = false;
+let lastQuestionsHtml = '';
+const askPane = document.getElementById('ask')!;
+const askForm = document.getElementById('ask-form') as HTMLFormElement;
+const askText = document.getElementById('ask-text') as HTMLTextAreaElement;
+const askSend = document.getElementById('ask-send') as HTMLButtonElement;
+const askFlash = document.getElementById('ask-flash')!;
+const qList = document.getElementById('q-list')!;
+
 async function refresh() {
   try {
-    const { data: stage, error: stageErr } = await db.from('soh_stage').select('poll_id').eq('id', 1).maybeSingle<Pick<Stage, 'poll_id'>>();
+    const { data: stage, error: stageErr } = await db.from('soh_stage').select('poll_id,mode,qa_open,qa_version').eq('id', 1)
+      .maybeSingle<Pick<Stage, 'poll_id' | 'mode' | 'qa_open' | 'qa_version'>>();
     if (stageErr) throw stageErr;
+
+    // Follow the projector: when it switches between poll and Q&A, so does the phone.
+    if (stage && stage.mode !== stageMode) {
+      if (stageMode !== null || stage.mode === 'qa') setTab(stage.mode === 'qa' ? 'ask' : 'vote');
+      stageMode = stage.mode;
+    }
+    qaOpen = stage?.qa_open ?? true;
+    if (stage && stage.qa_version !== qaVersion) {
+      qaVersion = stage.qa_version;
+      if (tab === 'ask' || questionsLoaded) void loadQuestions();
+    }
 
     if (!stage?.poll_id) {
       poll = null;
@@ -54,6 +82,7 @@ async function refresh() {
     console.warn(err);
   }
   render();
+  if (questionsLoaded) renderQuestions(); // picks up questions opening/closing
 }
 
 async function vote(optionId: string) {
@@ -153,6 +182,104 @@ function state(title: string, sub: string, icon: 'pulse' | 'spinner' | 'eyes' | 
       ${extra ? `<p class="state-extra">${extra}</p>` : ''}
     </section>`;
 }
+
+// ---------------------------------------------------------------- Q&A
+
+function setTab(next: Tab) {
+  tab = next;
+  document.getElementById('tab-vote')!.setAttribute('aria-selected', String(next === 'vote'));
+  document.getElementById('tab-ask')!.setAttribute('aria-selected', String(next === 'ask'));
+  view.hidden = next !== 'vote';
+  askPane.hidden = next !== 'ask';
+  if (next === 'ask') void loadQuestions();
+}
+
+async function loadQuestions() {
+  const { data, error } = await db.rpc('soh_public_questions', { p_voter_id: voterId });
+  if (error) return console.warn(error);
+  questions = (data ?? []) as PublicQuestion[];
+  questionsLoaded = true;
+  renderQuestions();
+}
+
+function renderQuestions() {
+  askText.disabled = askSend.disabled = !qaOpen;
+  askText.placeholder = qaOpen ? 'Type your question…' : 'Questions are closed right now';
+
+  const pending = questions.filter(q => q.mine && q.status === 'pending');
+  const approved = questions.filter(q => q.status === 'approved');
+  const item = (q: PublicQuestion) => `
+    <li class="q">
+      <p class="q-body">${esc(q.body)}${q.mine ? ' <span class="q-mine">You asked</span>' : ''}</p>
+      <button type="button" class="upvote${q.upvoted ? ' is-on' : ''}" data-q="${esc(q.id)}" aria-pressed="${q.upvoted}" aria-label="Upvote (${q.upvotes})">
+        <span aria-hidden="true">▲</span> ${q.upvotes}
+      </button>
+    </li>`;
+
+  const html = `
+    ${pending.length ? `
+      <h2 class="q-head">Waiting for approval</h2>
+      <ul class="q-list q-pending">${pending.map(q => `<li class="q"><p class="q-body">${esc(q.body)}</p></li>`).join('')}</ul>` : ''}
+    <h2 class="q-head">Questions from the room</h2>
+    ${approved.length
+      ? `<p class="q-hint">Tap ▲ on the ones you want answered.</p><ul class="q-list">${approved.map(item).join('')}</ul>`
+      : '<p class="q-hint">None yet. Be the first!</p>'}`;
+  if (html !== lastQuestionsHtml) {
+    qList.innerHTML = html;
+    lastQuestionsHtml = html;
+  }
+}
+
+askForm.addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = askText.value.trim();
+  if (!body || askSend.disabled) return;
+  askSend.disabled = true;
+  askFlash.className = 'flash';
+  askFlash.textContent = 'Sending…';
+  const { error } = await db.rpc('soh_ask', { p_body: body, p_voter_id: voterId });
+  askSend.disabled = !qaOpen;
+  if (error) {
+    askFlash.className = 'flash flash-err';
+    askFlash.textContent = /closed/.test(error.message) ? 'Questions are closed right now.' : "That didn't send. Try again.";
+    return;
+  }
+  askText.value = '';
+  updateCount();
+  askFlash.className = 'flash flash-ok';
+  askFlash.textContent = '✓ Sent! It appears once the presenter approves it.';
+  setTimeout(() => { if (askFlash.textContent?.startsWith('✓')) askFlash.innerHTML = '&nbsp;'; }, 5000);
+  void loadQuestions();
+});
+
+// Return sends on phones; Shift+Return still adds a new line.
+askText.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askForm.requestSubmit(); }
+});
+
+function updateCount() {
+  document.getElementById('ask-count')!.textContent = `${askText.value.length} / 280`;
+}
+askText.addEventListener('input', updateCount);
+
+qList.addEventListener('click', async e => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.upvote');
+  const q = btn && questions.find(x => x.id === btn.dataset.q);
+  if (!q) return;
+  // show it immediately, then confirm with the server
+  q.upvoted = !q.upvoted;
+  q.upvotes += q.upvoted ? 1 : -1;
+  renderQuestions();
+  const { error } = await db.rpc('soh_toggle_upvote', { p_question_id: q.id, p_voter_id: voterId });
+  if (error) console.warn(error);
+  void loadQuestions();
+});
+
+document.getElementById('tab-vote')!.addEventListener('click', () => setTab('vote'));
+document.getElementById('tab-ask')!.addEventListener('click', () => setTab('ask'));
+
+// Upvote counts change without a stage event, so refresh the list while it's open.
+setInterval(() => { if (tab === 'ask' && !document.hidden) void loadQuestions(); }, 8000);
 
 view.addEventListener('click', e => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.choice');
