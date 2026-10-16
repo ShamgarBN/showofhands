@@ -10,6 +10,7 @@ export default defineConfig({
         voter: resolve(__dirname, 'index.html'),
         present: resolve(__dirname, 'present.html'),
         admin: resolve(__dirname, 'admin.html'),
+        moderate: resolve(__dirname, 'moderate.html'),
       },
     },
   },

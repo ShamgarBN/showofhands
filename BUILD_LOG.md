@@ -71,3 +71,11 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - Projector Q&A mode (key Q): a "Now answering" card plus the top questions by upvotes. N marks the current one answered and puts the next most-upvoted on screen.
 - Design wrinkle: phones aren't allowed to read the questions table (so they never see others' phone IDs or unapproved questions), which also means they get no live events from it. Fix: a database trigger bumps a counter on the stage whenever a question is moderated; phones see that and refetch.
 - Re-ran the 20 permission checks after all the changes. Two "failed" on the first run, but because of my leftover test question, not a security gap; tightened the test to check only what matters, and all 20 pass.
+
+## Change request: a moderator role
+
+- My idea: a third person (moderator) approves Q&A questions from their phone while I present.
+- Claude pushed back on giving the moderator a normal account: in this shared Supabase project, any signed-in account can read and delete my other app's data. Instead: a **private moderator link** I text to them. No account, no email.
+- The database stores only a scrambled (SHA-256) version of the link's key. "Replace link" kills the old one instantly; "Turn off link" locks the moderator out within seconds (tested).
+- The moderator can approve, hide, mark answered, and choose which approved question is on the projector. Nothing else: no poll controls, no phone IDs.
+- Permission checks grew from 20 to 30, all passing, including: wrong link rejected, a phone can't create a link, unapproved questions can't go on screen, the link gives no poll access.

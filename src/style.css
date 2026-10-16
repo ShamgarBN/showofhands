@@ -598,3 +598,18 @@ kbd {
 .mod-done { margin-top: 16px; }
 .mod-done summary { cursor: pointer; color: var(--muted); margin-bottom: 8px; }
 @media (max-width: 640px) { .mod-row { grid-template-columns: 1fr; } .mod-actions { justify-content: flex-start; } }
+
+/* ---------------------------------------------------------------- moderator (phone) */
+.mod .btn { font-size: 16px; padding: 12px 16px; }
+.mod-banner { margin: 0 0 8px; padding: 12px 14px; border-radius: 12px; background: var(--panel); color: var(--muted); line-height: 1.45; }
+.mod-banner strong { color: var(--text); }
+.mod-banner-err { background: #3a1620; color: #ff8fa3; }
+.mq-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.mq { background: var(--panel); border-radius: var(--radius); padding: 14px; border: 3px solid transparent; display: grid; gap: 10px; }
+.mq.is-onscreen { border-color: var(--accent); background: #2a2610; }
+.mq-body { margin: 0; font-size: 18px; line-height: 1.35; overflow-wrap: anywhere; }
+.mq-meta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.mq-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mq-actions .btn { flex: 1 1 auto; min-height: 48px; }
+.mod-link { display: flex; gap: 8px; margin-bottom: 10px; }
+.mod-link input { flex: 1; font-size: 14px !important; }

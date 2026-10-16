@@ -52,6 +52,20 @@ function mount() {
         </section>
 
         <section class="card">
+          <h2>Moderator link</h2>
+          <p class="help">Text this link to your moderator. On their phone they can approve or hide questions and pick which one is on the projector. No account needed. Replacing the link turns the old one off.</p>
+          <p class="help" id="mod-status">Checking…</p>
+          <div class="mod-link" id="mod-link" hidden>
+            <input type="text" id="mod-url" readonly aria-label="Moderator link" />
+            <button type="button" class="btn" id="mod-copy">Copy</button>
+          </div>
+          <div class="inline">
+            <button type="button" class="btn" id="mod-new">Create moderator link</button>
+            <button type="button" class="btn btn-danger" id="mod-off" hidden>Turn off link</button>
+          </div>
+        </section>
+
+        <section class="card">
           <h2>“Built with AI” panel</h2>
           <p class="help">Shown on the projector with <kbd>A</kbd> or the toggle below.</p>
           <label class="switch"><input type="checkbox" id="ai-show" /> Show on projector now</label>
@@ -75,6 +89,15 @@ function mount() {
   $('ai-add').addEventListener('click', () => addStatRow('', ''));
   $('ai-save').addEventListener('click', saveStats);
   $('ai-show').addEventListener('change', e => void setStage({ show_built_with_ai: (e.target as HTMLInputElement).checked }));
+
+  $('mod-new').addEventListener('click', newModLink);
+  $('mod-off').addEventListener('click', revokeModLink);
+  $('mod-copy').addEventListener('click', () => {
+    const input = $('mod-url') as HTMLInputElement;
+    input.select();
+    void navigator.clipboard?.writeText(input.value).then(() => toast('Link copied'), () => toast('Select the link and copy it'));
+  });
+  void loadModLink();
 
   root.addEventListener('click', onClick);
   setInterval(renderCountdown, 250);
@@ -319,6 +342,52 @@ async function setQuestion(id: string, status: QuestionStatus, ok: string) {
   if (error) return toast(`Didn't save: ${error.message}`);
   if (status !== 'approved' && stage?.onscreen_question_id === id) await setStage({ onscreen_question_id: null });
   toast(ok);
+}
+
+// ---------------------------------------------------------------- moderator link
+
+// The database keeps only a hash of the key, so the full link can't be fetched later.
+// This browser remembers the last link it made so it can show it again.
+const MOD_LINK_STORE = 'soh_mod_link';
+
+async function loadModLink() {
+  const { data, error } = await db.rpc('soh_mod_key_created_at');
+  if (error) { $('mod-status').textContent = `Couldn't check: ${error.message}`; return; }
+  const created = data as string | null;
+  let saved: { url: string; created: string } | null = null;
+  try { saved = JSON.parse(localStorage.getItem(MOD_LINK_STORE) ?? 'null'); } catch { /* storage blocked */ }
+  showModLink(created, saved && created && saved.created === created ? saved.url : null);
+}
+
+function showModLink(created: string | null, url: string | null) {
+  $('mod-status').textContent = !created
+    ? 'No moderator link right now.'
+    : `Link active since ${new Date(created).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.${url ? '' : ' It was made in another browser, so it can’t be shown here. Replace it to get a new one.'}`;
+  $('mod-link').hidden = !url;
+  ($('mod-url') as HTMLInputElement).value = url ?? '';
+  $('mod-new').textContent = created ? 'Replace link' : 'Create moderator link';
+  $('mod-off').hidden = !created;
+}
+
+async function newModLink() {
+  const replacing = !$('mod-off').hidden;
+  if (replacing && !confirm('Replace the moderator link? The old link stops working right away.')) return;
+  const { data, error } = await db.rpc('soh_new_mod_key');
+  if (error) return toast(`Couldn't create: ${error.message}`);
+  const url = `${new URL('moderate.html', location.href).href}#k=${data as string}`;
+  const { data: created } = await db.rpc('soh_mod_key_created_at');
+  try { localStorage.setItem(MOD_LINK_STORE, JSON.stringify({ url, created })); } catch { /* storage blocked */ }
+  showModLink(created as string, url);
+  toast(replacing ? 'New link made; the old one is off' : 'Moderator link ready');
+}
+
+async function revokeModLink() {
+  if (!confirm('Turn off the moderator link? Your moderator loses access right away.')) return;
+  const { error } = await db.rpc('soh_revoke_mod_key');
+  if (error) return toast(`Couldn't turn off: ${error.message}`);
+  try { localStorage.removeItem(MOD_LINK_STORE); } catch { /* storage blocked */ }
+  showModLink(null, null);
+  toast('Moderator link turned off');
 }
 
 // ---------------------------------------------------------------- polls list + editor

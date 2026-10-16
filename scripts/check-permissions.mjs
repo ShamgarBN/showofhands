@@ -71,6 +71,36 @@ check('Read questions table directly', r.body === '[]', r.body);
 r = await rpc('soh_ask', { p_body: 'x'.repeat(281), p_voter_id: A });
 check('Question over 280 characters', r.status >= 400, r.body);
 
+// ---- moderator link
+const savedKey = rows(owner("select key_hash, created_at::text from soh_mod_key"))[0] ?? null; // keep any real link
+const MOD = 'test-moderator-key-0123456789abcdef0123456789abcdef';
+owner(`insert into soh_mod_key (id, key_hash) values (1, encode(sha256(convert_to('${MOD}','UTF8')),'hex')) on conflict (id) do update set key_hash = excluded.key_hash`);
+const pendingQ = JSON.parse((await rpc('soh_ask', { p_body: 'Moderator test question', p_voter_id: A })).body);
+r = await rpc('soh_mod_questions', { p_key: 'wrong-key-wrong-key-wrong-key-wrong-key' });
+check('Moderator: wrong link is rejected', r.status >= 400, r.body);
+r = await rpc('soh_mod_set_status', { p_key: '', p_question_id: pendingQ, p_status: 'approved' });
+check('Moderator: no link can\'t approve', r.status >= 400, r.body);
+r = await rpc('soh_new_mod_key', {});
+check('Phone can\'t create a moderator link', r.status >= 400, r.body);
+r = await rpc('soh_mod_questions', { p_key: MOD });
+check('Moderator: valid link sees questions', r.status < 300 && JSON.parse(r.body).some(q => q.id === pendingQ), r.status);
+check('Moderator list hides phone IDs', !r.body.includes('voter_id') && !r.body.includes(A), 'no voter_id field');
+r = await rpc('soh_mod_set_onscreen', { p_key: MOD, p_question_id: pendingQ });
+check('Moderator: unapproved can\'t go on screen', r.status >= 400, r.body);
+r = await rpc('soh_mod_set_status', { p_key: MOD, p_question_id: pendingQ, p_status: 'approved' });
+check('Moderator: approve (should work)', r.status < 300, r.status);
+r = await rpc('soh_mod_set_onscreen', { p_key: MOD, p_question_id: pendingQ });
+const onscreen = rows(owner('select onscreen_question_id::text id from soh_stage'))[0].id;
+check('Moderator: put on screen (should work)', r.status < 300 && onscreen === pendingQ, r.status);
+r = await rpc('soh_mod_set_status', { p_key: MOD, p_question_id: pendingQ, p_status: 'pending' });
+check('Moderator: can\'t set made-up statuses', r.status >= 400, r.body);
+r = await rest('PATCH', `soh_polls?id=eq.${poll.id}`, { status: 'open' });
+check('Moderator key gives no poll access', r.status >= 400 || r.body === '[]', r.body);
+owner('update soh_stage set onscreen_question_id = null');
+owner(savedKey
+  ? `update soh_mod_key set key_hash='${savedKey.key_hash}', created_at='${savedKey.created_at}'`
+  : 'delete from soh_mod_key');
+
 // clean up: remove all test data, back to a fresh draft poll
 owner(`delete from soh_questions where voter_id like 'test-phone-%'; delete from soh_votes where voter_id like 'test-phone-%'; delete from soh_polls where title='SOH TEST other poll'; update soh_polls set status='draft' where id='${poll.id}'; update soh_stage set show_built_with_ai=false where id=1`);
 const left = rows(owner("select (select count(*) from soh_votes)::int votes, (select count(*) from soh_questions)::int questions, (select count(*) from soh_polls)::int polls, (select count(*) from soh_options)::int options"))[0];
