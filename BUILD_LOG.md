@@ -5,8 +5,19 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 | | |
 |---|---|
 | Started | 2026-10-15, 19:21 EDT (after the planning interview) |
-| Finished | _in progress_ |
-| Prompts so far | 9 (brief, 7 interview answers, plan approval) |
+| Finished | 2026-10-15, 22:05 EDT: **about 2 hours 45 minutes** |
+| My messages | About 27, counting multiple-choice answers. Most were "yes, next stage" or a decision. |
+| Code I wrote | 0 lines. Claude wrote about 3,700 lines of TypeScript, HTML, CSS, SQL and test scripts. |
+| Commits | 12, each one a working, deployed step |
+| Tests | 30 permission checks (all pass); load tests with 150 and 300 simulated phones (zero errors) |
+
+## Numbers for the slide
+
+- **~2¾ hours** from a written brief to a deployed app, including an hour stuck waiting on an email limit. Claude kept building through it.
+- **0 lines** of code typed by me.
+- **4 screens:** audience phone, projector, admin, moderator.
+- **3 times Claude stopped and changed the plan** on its own after checking the facts: the shared database's open permissions, Supabase's live-message limit, and moderator accounts. Each one would have bitten on stage.
+- **2 bugs** found by testing the whole system together, both fixed before the talk.
 
 ## Planning interview
 
@@ -100,3 +111,8 @@ Ran everything together: projector, admin, moderator and a phone, on the live da
 - **Bug 2 (found by testing):** resetting during the tie-break animation got overwritten when the animation finished ("Revealed" came back). Fix: only one reveal can run at a time, reset or reopen cancels it, and the final "Revealed" write only happens if the poll is still closed, so even a reset from the admin page in another window wins.
 - A phone in a background browser tab lagged a few seconds; with the tab in front (like a real phone), it switched in 1.9 seconds. The browser slows background tabs; not an app problem.
 - Permission checks re-run after the fixes: 30/30 pass.
+
+## Stage 8: docs and polish
+
+- README: what each page is for, how it works, keyboard shortcuts, setup from scratch, deploy, test scripts, and a day-of checklist (wake the database, sign in the day before, open the projector from the live site so the QR points to the right place, test the QR on wifi and cellular from the back of the room, wipe rehearsal votes, show-of-hands fallback).
+- Disabled admin buttons now look clearly greyed out, so the one available action stands out.

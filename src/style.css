@@ -413,7 +413,7 @@ kbd {
 .help { color: var(--muted); margin: 0 0 12px; line-height: 1.45; }
 .live-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 16px; }
-.btn:disabled { opacity: .4; cursor: default; }
+.btn:disabled, .btn-ghost:disabled, .btn-danger:disabled { background: #1c212c; color: #5c6477; opacity: 1; cursor: default; }
 .btn-ghost { background: #2a3040; color: var(--text); }
 .btn-danger { background: #3a1620; color: #ff8fa3; }
 .btn-sm { padding: 7px 12px; font-size: 14px; }
