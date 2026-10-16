@@ -27,6 +27,8 @@ export interface Stage {
   onscreen_question_id: string | null;
   show_built_with_ai: boolean;
   built_stats: { label: string; value: string }[];
+  /** Goes up when the admin page asks the projector to reveal. */
+  reveal_requests: number;
 }
 
 export interface Result {

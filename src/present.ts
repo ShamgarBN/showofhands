@@ -107,6 +107,8 @@ function $(id: string) {
 
 // ---------------------------------------------------------------- data
 
+let seenRevealRequests: number | null = null; // baseline from first load, so old requests don't replay
+
 async function refresh() {
   const snap = await api.load();
   stage = snap.stage;
@@ -114,6 +116,14 @@ async function refresh() {
   options = snap.options;
   results = new Map(snap.results.map(x => [x.option_id, x]));
   render();
+
+  // The admin page asked for a reveal (its "Reveal on projector" button).
+  const requests = stage?.reveal_requests ?? 0;
+  if (seenRevealRequests === null) seenRevealRequests = requests;
+  else if (requests > seenRevealRequests) {
+    seenRevealRequests = requests;
+    void reveal();
+  }
 }
 
 const totalFor = (id: string) => Number(results.get(id)?.total ?? 0);
@@ -402,7 +412,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 document.addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if ((e.target as HTMLElement).closest('input, textarea')) return;
+  if (e.target instanceof Element && e.target.closest('input, textarea')) return;
   const key = e.key.toLowerCase();
   const actions: Record<string, () => unknown> = {
     o: openVoting,

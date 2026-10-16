@@ -53,3 +53,12 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - The **database** enforces the deadline, not just the screen: a vote one second late is rejected. Phones and projector sync to the database clock so they count down together.
 - C starts the countdown (C again cancels); Shift+C still closes immediately.
 - Bug caught in testing: the button stayed visible after the reveal because a style overrode "hidden". Fixed with one global rule.
+
+## Stage 5: admin page
+
+- Live controls: open, close in 30s (+ auto-reveal), cancel, close now, blind mode, reset (with a confirm), and **"Reveal on projector"**, which signals the projector window to run its animation. Claude flagged that on the day my laptop will show the admin page while the projector shows the presenter view, so keyboard shortcuts in one window wouldn't reach the other.
+- Results table split into phones / rehearsal / by hand.
+- Show-of-hands fallback: +/− buttons and "Set…" per option to type in a hand count.
+- Rehearsal mode: N fake voters trickle in over T seconds with uneven odds, flagged as rehearsal, red badge on the projector, one-click wipe.
+- Poll editor: create, rename, add/remove/reorder options. Editing keeps existing options' votes; removing one asks first.
+- "Built with AI" stats editor and an on/off switch for the projector panel.

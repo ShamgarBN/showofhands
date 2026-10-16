@@ -14,7 +14,7 @@ export function demoApi(): PresenterApi {
     ['Plate cost calculator', 'Enter ingredient costs and get the true cost and a suggested price per dish.'],
   ].map(([label, description], i) => ({ id: `demo-${i}`, poll_id: poll.id, label, description, sort_order: i + 1, manual_count: 0 }));
   const stage: Stage = {
-    id: 1, poll_id: poll.id, mode: 'poll', qa_open: true, onscreen_question_id: null, show_built_with_ai: false,
+    id: 1, poll_id: poll.id, mode: 'poll', qa_open: true, onscreen_question_id: null, show_built_with_ai: false, reveal_requests: 0,
     built_stats: [
       { label: 'Time to build', value: '3.5 hrs' },
       { label: 'Prompts', value: '42' },
