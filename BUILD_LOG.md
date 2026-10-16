@@ -79,3 +79,14 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - The database stores only a scrambled (SHA-256) version of the link's key. "Replace link" kills the old one instantly; "Turn off link" locks the moderator out within seconds (tested).
 - The moderator can approve, hide, mark answered, and choose which approved question is on the projector. Nothing else: no poll controls, no phone IDs.
 - Permission checks grew from 20 to 30, all passing, including: wrong link rejected, a phone can't create a link, unapproved questions can't go on screen, the link gives no poll access.
+
+## Stage 7: reliability pass
+
+- **Biggest catch of the build:** checking Supabase's current docs turned up a free-plan limit of **100 Realtime messages per second**, counted per phone. One "voting is open" change pushed to 150 phones is 150 messages at once, and going over disconnects everyone, right at the key moment. Fix: phones no longer hold live connections. Each one checks in every 2.5 seconds with **one small request** that returns everything it needs. Only the projector, admin and moderator screens (3 connections) stay live.
+- **Load test** from a single IP address (like a room on venue wifi):
+  - 150 phones: 150/150 votes stored, zero errors, votes answered in ~40 ms, every phone noticed "voting closed" within one check-in.
+  - 300 phones (2× the expected crowd): 300/300 votes, zero errors on the final run, ~90 requests/second.
+- **Self-repair:** cut the live connection on purpose; the screen kept updating through regular checks (a new question arrived in 3 s), showed "Reconnecting…", and rebuilt its live connection on its own about 20 seconds later.
+- Every request now gives up after 8 seconds, so a stalled venue network can't freeze a screen.
+- Older phones: works back to iOS 15 Safari (fallbacks for three newer browser features).
+- Bug found along the way: after a reset, a phone kept showing the vote it had cast before. Now the phone always follows the server's record.

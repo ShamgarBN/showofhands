@@ -1,7 +1,7 @@
 import './style.css';
 import { phoneClient } from './lib/supabase';
 import { getVoterId } from './lib/voterId';
-import { serverClockOffset, watchTables } from './lib/live';
+import { offsetFrom, pollEvery } from './lib/live';
 import { esc } from './lib/dom';
 import type { Option, Poll, PublicQuestion, Stage } from './lib/types';
 
@@ -13,12 +13,11 @@ const conn = document.getElementById('conn')!;
 let poll: Poll | null = null;
 let options: Option[] = [];
 let myOptionId: string | null = null;
-let myVoteLoadedFor: string | null = null;
+let voteSeq = 0; // bumps on every tap, so a slow check can't undo a newer choice
 let sending = false;
 let flash: { kind: 'ok' | 'err'; text: string } | null = null;
 let failures = 0;
 let lastHtml = '';
-let connTimer: number | undefined;
 let clockOffset = 0; // add to Date.now() to get database time
 
 // Q&A
@@ -37,50 +36,47 @@ const askSend = document.getElementById('ask-send') as HTMLButtonElement;
 const askFlash = document.getElementById('ask-flash')!;
 const qList = document.getElementById('q-list')!;
 
+interface PhoneState {
+  now: string;
+  stage: Pick<Stage, 'poll_id' | 'mode' | 'qa_open' | 'qa_version'> | null;
+  poll: Poll | null;
+  options: Option[];
+  my_vote: string | null;
+}
+
+/** One request returns everything this phone shows (see soh_phone_state). */
 async function refresh() {
-  try {
-    const { data: stage, error: stageErr } = await db.from('soh_stage').select('poll_id,mode,qa_open,qa_version').eq('id', 1)
-      .maybeSingle<Pick<Stage, 'poll_id' | 'mode' | 'qa_open' | 'qa_version'>>();
-    if (stageErr) throw stageErr;
-
-    // Follow the projector: when it switches between poll and Q&A, so does the phone.
-    if (stage && stage.mode !== stageMode) {
-      if (stageMode !== null || stage.mode === 'qa') setTab(stage.mode === 'qa' ? 'ask' : 'vote');
-      stageMode = stage.mode;
-    }
-    qaOpen = stage?.qa_open ?? true;
-    if (stage && stage.qa_version !== qaVersion) {
-      qaVersion = stage.qa_version;
-      if (tab === 'ask' || questionsLoaded) void loadQuestions();
-    }
-
-    if (!stage?.poll_id) {
-      poll = null;
-      options = [];
-    } else {
-      const [p, o] = await Promise.all([
-        db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id,closes_at').eq('id', stage.poll_id).maybeSingle<Poll>(),
-        db.from('soh_options').select('id,poll_id,label,description,sort_order').eq('poll_id', stage.poll_id).order('sort_order'),
-      ]);
-      if (p.error) throw p.error;
-      if (o.error) throw o.error;
-      poll = p.data;
-      options = (o.data ?? []) as Option[];
-    }
-
-    // Restore this phone's earlier pick (e.g. after a reload), once per poll.
-    if (poll && myVoteLoadedFor !== poll.id) {
-      const { data, error } = await db.rpc('soh_my_vote', { p_poll_id: poll.id, p_voter_id: voterId });
-      if (!error) {
-        myOptionId = (data as string | null) ?? null;
-        myVoteLoadedFor = poll.id;
-      }
-    }
-    failures = 0;
-  } catch (err) {
+  const seq = voteSeq;
+  const sent = Date.now();
+  const { data, error } = await db.rpc('soh_phone_state', { p_voter_id: voterId });
+  if (error || !data) {
     failures++;
-    console.warn(err);
+    console.warn(error);
+    render();
+    return;
   }
+  failures = 0;
+  const state = data as PhoneState;
+  clockOffset = offsetFrom(state.now, sent, Date.now());
+  const stage = state.stage;
+
+  // Follow the projector: when it switches between poll and Q&A, so does the phone.
+  if (stage && stage.mode !== stageMode) {
+    if (stageMode !== null || stage.mode === 'qa') setTab(stage.mode === 'qa' ? 'ask' : 'vote');
+    stageMode = stage.mode;
+  }
+  qaOpen = stage?.qa_open ?? true;
+  if (stage && stage.qa_version !== qaVersion) {
+    qaVersion = stage.qa_version;
+    if (tab === 'ask' || questionsLoaded) void loadQuestions();
+  }
+
+  poll = state.poll;
+  options = state.options;
+  // The server's record of this phone's vote wins (it also clears after a reset),
+  // unless the person tapped again while this check was in flight.
+  if (!sending && seq === voteSeq) myOptionId = state.my_vote;
+
   render();
   if (questionsLoaded) renderQuestions(); // picks up questions opening/closing
 }
@@ -88,6 +84,7 @@ async function refresh() {
 async function vote(optionId: string) {
   if (!poll || poll.status !== 'open' || secondsLeft() === 0 || sending) return;
   const previous = myOptionId;
+  voteSeq++;
   myOptionId = optionId; // show the choice immediately
   sending = true;
   flash = null;
@@ -254,7 +251,7 @@ askForm.addEventListener('submit', async e => {
 
 // Return sends on phones; Shift+Return still adds a new line.
 askText.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askForm.requestSubmit(); }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askSend.click(); } // requestSubmit needs iOS 16
 });
 
 function updateCount() {
@@ -295,16 +292,8 @@ setInterval(() => {
   else el.textContent = deadlineText(left);
 }, 250);
 
-void serverClockOffset(db).then(ms => { clockOffset = ms; render(); });
-
-watchTables({
-  client: db,
-  tables: ['soh_stage', 'soh_polls', 'soh_options'],
-  refresh,
-  // Only show "Reconnecting" if realtime stays down for a few seconds.
-  onStatus: s => {
-    clearTimeout(connTimer);
-    if (s === 'live') conn.hidden = true;
-    else connTimer = window.setTimeout(() => { conn.hidden = false; }, 4000);
-  },
-});
+// Check in every 2.5 seconds; show "Reconnecting…" after two failed checks in a row.
+pollEvery(async () => {
+  await refresh();
+  conn.hidden = failures < 2;
+}, 2500);

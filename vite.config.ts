@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 export default defineConfig({
   base: '/showofhands/',
   build: {
+    // Older phones in the audience: iOS 15 Safari and up, Android Chrome from ~2021.
+    target: ['es2022', 'safari15', 'chrome96', 'firefox100'],
     rollupOptions: {
       input: {
         voter: resolve(__dirname, 'index.html'),
