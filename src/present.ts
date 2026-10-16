@@ -1,14 +1,8 @@
 import './style.css';
 import QRCode from 'qrcode';
-import { ownerClient } from './lib/supabase';
-import { requireOwner } from './lib/auth';
-import { watchTables } from './lib/live';
 import { esc } from './lib/dom';
-import type { Option, Poll, PollStatus, Stage } from './lib/types';
+import type { Option, Poll, PollStatus, PresenterApi, Result, Stage } from './lib/types';
 
-interface Result { option_id: string; real_votes: number; simulated_votes: number; manual_votes: number; total: number }
-
-const db = ownerClient();
 const root = document.getElementById('root')!;
 const joinUrl = new URL(import.meta.env.BASE_URL, location.origin).href;
 const joinUrlShort = joinUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -31,12 +25,23 @@ const SHORTCUTS: [string, string][] = [
   ['A', '"Built with AI" panel on/off'],
   ['F', 'Full screen on/off'],
   ['X X', 'Reset all votes (press twice)'],
-  ['?', 'This cheat sheet'],
+  ['? or H', 'This cheat sheet'],
   ['Esc', 'Close panels'],
 ];
 
-await requireOwner(db, root);
+// ?demo uses fake in-memory data for testing and rehearsal. Dev server only.
+const demo = import.meta.env.DEV && new URLSearchParams(location.search).has('demo');
+const api: PresenterApi = demo ? (await import('./lib/demoApi')).demoApi() : await connect();
 mount();
+
+async function connect(): Promise<PresenterApi> {
+  const [{ ownerClient }, { requireOwner }, { supabaseApi }] = await Promise.all([
+    import('./lib/supabase'), import('./lib/auth'), import('./lib/presenterApi'),
+  ]);
+  const db = ownerClient();
+  await requireOwner(db, root);
+  return supabaseApi(db);
+}
 
 // ---------------------------------------------------------------- layout
 
@@ -78,13 +83,7 @@ function mount() {
   QRCode.toString(joinUrl, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } })
     .then(svg => { $('qr').innerHTML = svg; });
 
-  watchTables({
-    client: db,
-    tables: ['soh_stage', 'soh_polls', 'soh_options', 'soh_votes'],
-    refresh,
-    fallbackMs: 3000,
-    onStatus: s => $('conn').classList.toggle('is-down', s !== 'live'),
-  });
+  api.watch(refresh, live => $('conn').classList.toggle('is-down', !live));
 }
 
 function $(id: string) {
@@ -94,24 +93,11 @@ function $(id: string) {
 // ---------------------------------------------------------------- data
 
 async function refresh() {
-  const { data: st, error } = await db.from('soh_stage').select('*').eq('id', 1).maybeSingle<Stage>();
-  if (error) throw error;
-  stage = st;
-  if (stage?.poll_id) {
-    const [p, o, r] = await Promise.all([
-      db.from('soh_polls').select('id,title,status,blind_mode,winner_option_id').eq('id', stage.poll_id).maybeSingle<Poll>(),
-      db.from('soh_options').select('*').eq('poll_id', stage.poll_id).order('sort_order'),
-      db.rpc('soh_results', { p_poll_id: stage.poll_id }),
-    ]);
-    if (p.error || o.error || r.error) throw p.error ?? o.error ?? r.error;
-    poll = p.data;
-    options = (o.data ?? []) as Option[];
-    results = new Map(((r.data ?? []) as Result[]).map(x => [x.option_id, x]));
-  } else {
-    poll = null;
-    options = [];
-    results = new Map();
-  }
+  const snap = await api.load();
+  stage = snap.stage;
+  poll = snap.poll;
+  options = snap.options;
+  results = new Map(snap.results.map(x => [x.option_id, x]));
   render();
 }
 
@@ -218,16 +204,16 @@ function toast(text: string) {
 
 async function setPoll(patch: Partial<Poll>) {
   if (!poll) return false;
-  const { error } = await db.from('soh_polls').update(patch).eq('id', poll.id);
-  if (error) { toast(`Didn't save: ${error.message}`); return false; }
+  const error = await api.updatePoll(poll.id, patch);
+  if (error) { toast(`Didn't save: ${error}`); return false; }
   Object.assign(poll, patch);
   render();
   return true;
 }
 
 async function setStage(patch: Partial<Stage>) {
-  const { error } = await db.from('soh_stage').update(patch).eq('id', 1);
-  if (error) { toast(`Didn't save: ${error.message}`); return; }
+  const error = await api.updateStage(patch);
+  if (error) { toast(`Didn't save: ${error}`); return; }
   if (stage) Object.assign(stage, patch);
   render();
 }
@@ -259,7 +245,7 @@ async function reveal() {
 
   revealing = true;
   render(); // drop blind mode: bars grow to their real sizes
-  await sleep(1600);
+  await sleep(2400); // let the bars grow before crowning anyone
 
   if (tied.length > 1) {
     toast(`It's a ${tied.length}-way tie! Breaking it at random…`);
@@ -320,13 +306,8 @@ async function reset() {
     return toast('Press X again to erase all votes for this poll');
   }
   resetArmedUntil = 0;
-  const id = poll.id;
-  const steps = await Promise.all([
-    db.from('soh_votes').delete().eq('poll_id', id),
-    db.from('soh_options').update({ manual_count: 0 }).eq('poll_id', id),
-  ]);
-  const failed = steps.find(s => s.error);
-  if (failed) return toast(`Reset failed: ${failed.error!.message}`);
+  const error = await api.resetVotes(poll.id);
+  if (error) return toast(`Reset failed: ${error}`);
   await setPoll({ status: 'draft', winner_option_id: null });
   $('bars').querySelectorAll('.row').forEach(r => r.classList.remove('is-winner', 'is-loser'));
   shown.clear();
@@ -337,6 +318,10 @@ async function reset() {
 function toggleFullscreen() {
   if (document.fullscreenElement) void document.exitFullscreen();
   else void document.documentElement.requestFullscreen().catch(() => toast('Full screen not allowed here'));
+}
+
+function toggleCheats() {
+  $('cheats').hidden = !$('cheats').hidden;
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -355,8 +340,9 @@ document.addEventListener('keydown', e => {
     a: () => setStage({ show_built_with_ai: !stage?.show_built_with_ai }),
     f: toggleFullscreen,
     x: reset,
-    '?': () => { $('cheats').hidden = !$('cheats').hidden; },
-    h: () => { $('cheats').hidden = !$('cheats').hidden; },
+    '?': toggleCheats,
+    '/': toggleCheats, // Shift+/ reports as '/' on some keyboards
+    h: toggleCheats,
     escape: () => {
       $('cheats').hidden = true;
       if (stage?.show_built_with_ai) void setStage({ show_built_with_ai: false });

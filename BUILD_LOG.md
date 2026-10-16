@@ -36,3 +36,12 @@ How this app was built with Claude Code, for the "I built this with AI" part of 
 - Remembers your choice after a reload; changing your vote updates the same row instead of adding one.
 - About 61 KB compressed, so it loads fast on cellular.
 - Problem: the option buttons had no names for screen readers. Fix: added labels.
+
+## Stage 4: projector view
+
+- 16:9 stage that scales as one frame, so 1080p and 4K look identical. Huge QR code generated in the browser (no outside service), the short URL, live animated bars, total votes and a status chip.
+- Keyboard controls for everything: O open, C close, R reveal, B blind mode, A "Built with AI" panel, F full screen, X X reset, ? or H cheat sheet.
+- Reveal: bars grow to their real sizes, a pause, then the winner gets a gold glow, a trophy and confetti. A tie triggers a slowing "spin" between the tied options that lands on a random winner.
+- Magic-link sign-in for the presenter; only my account is allowed in.
+- **Real-world snag:** I opened the sign-in link in the wrong browser, then hit Supabase's 2-emails-per-hour limit. Instead of waiting, Claude added a dev-only demo mode with fake votes, so the projector could be tested without signing in. It's stripped from the published site.
+- Problems found while testing: option names wrapped and pushed the last row off-screen at 1080p (fixed by restacking each row); the cheat sheet needed a second key (H) because some keyboards report Shift+/ differently.
